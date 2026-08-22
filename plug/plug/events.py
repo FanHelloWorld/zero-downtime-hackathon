@@ -14,7 +14,9 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from . import eventlog
 from .config import EVENT_LOG, ensure_state_dir
+
 
 STAGES = ("watchdog", "buffer", "planner", "agent", "worker", "safety", "send")
 
@@ -30,12 +32,19 @@ def anon(value: str | None) -> str:
 
 
 def emit(stage: str, event: str, *, chat: str | None = None, echo: bool = False, **detail: Any) -> None:
-    """Append one event. ``detail`` is free-form and must stay JSON-serializable."""
+    """Append one event. ``detail`` is free-form and must stay JSON-serializable.
+
+    Written twice, to two things that are good at different jobs: the JSONL file
+    you tail when something is wrong, and an indexed table a UI can query and
+    stream from. The second write cannot fail loudly — see ``eventlog``.
+    """
+    now = datetime.now(timezone.utc)
+    key = anon(chat)
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": now.isoformat(),
         "stage": stage,
         "event": event,
-        "chat": anon(chat),
+        "chat": key,
         "detail": detail,
     }
     line = json.dumps(record, default=str)
@@ -43,5 +52,10 @@ def emit(stage: str, event: str, *, chat: str | None = None, echo: bool = False,
     with _lock:
         with EVENT_LOG.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+
+    eventlog.record(
+        stage, event, chat=key, detail=detail, ts=now.timestamp(), iso=record["ts"]
+    )
+
     if echo:
         print(line, file=sys.stderr, flush=True)

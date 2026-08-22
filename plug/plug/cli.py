@@ -13,7 +13,9 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from typing import Optional
+
 
 import typer
 from rich.console import Console
@@ -155,6 +157,71 @@ def purge(
     with JobStore() as jobs:
         removed_jobs = jobs.purge(days * 24 * 3600)
     console.print(f"removed {removed_jobs} settled job(s)")
+
+    from plug.eventlog import EventStore
+
+    with EventStore() as log:
+        removed_events = log.purge(days * 24 * 3600)
+    console.print(f"removed {removed_events} old event(s)")
+
+
+@app.command()
+def backfill(
+    limit: int = typer.Option(0, "--limit", help="Only the most recent N lines. 0 means all."),
+) -> None:
+    """Import the JSONL history into the indexed event store.
+
+    The two logs only started being written together recently, so everything
+    that happened before that exists in events.jsonl and nowhere else. This
+    replays it so the console opens onto a populated view instead of whatever
+    has happened since the last restart.
+
+    Safe to re-run: it skips anything already at or before the newest stored
+    timestamp, so a second pass imports nothing.
+    """
+    import json
+
+    from plug.config import EVENT_LOG
+    from plug.eventlog import EventStore, record
+
+    if not EVENT_LOG.exists():
+        console.print(f"[yellow]no log at {EVENT_LOG}[/yellow]")
+        raise typer.Exit(code=1)
+
+    lines = EVENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    if limit:
+        lines = lines[-limit:]
+
+    # Dedup on the exact timestamp string rather than "newer than the newest
+    # stored": live events are written as they happen, so the store's newest row
+    # is always ~now and a high-water mark would skip the entire history.
+    with EventStore() as store:
+        seen = {(r["iso"], r["stage"], r["event"]) for r in store.recent(200_000)}
+
+    imported = skipped = broken = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+            stamp = datetime.fromisoformat(row["ts"]).timestamp()
+        except (ValueError, TypeError, KeyError):
+            broken += 1
+            continue
+        if (row["ts"], row.get("stage"), row.get("event")) in seen:
+            skipped += 1
+            continue
+
+        record(
+            row.get("stage", "?"), row.get("event", "?"),
+            chat=row.get("chat"), detail=row.get("detail") or {},
+            ts=stamp, iso=row["ts"],
+        )
+        imported += 1
+
+    console.print(
+        f"imported {imported} event(s) · skipped {skipped} already stored"
+        + (f" · {broken} unparseable" if broken else "")
+    )
+
 
 
 

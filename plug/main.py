@@ -4,7 +4,10 @@
 
     /watchdog/...    the watchdog server's routes
     /supervisor/...  the supervisor agent's routes
+    /api/...         the console's read API and event stream
+    /                the built UI, when web/dist exists
     /health          both loops at once
+
 
 This is a convenience, not the recommended production shape. Running them
 together gives up the main reason they were separated: one process means one
@@ -23,8 +26,10 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from console.main import app as console_app
 from supervisor_agent.main import app as supervisor_app, loop as supervisor_loop
 from watchdog.main import app as watchdog_app, loop as watchdog_loop
+
 
 
 @asynccontextmanager
@@ -70,3 +75,11 @@ def health() -> dict[str, Any]:
 
 app.mount("/watchdog", watchdog_app)
 app.mount("/supervisor", supervisor_app)
+
+# Last, and at the root: the console owns "/" so the UI is served from the same
+# origin as its API — no CORS, no second port, no second terminal. Mounts are
+# matched in the order they are added, so the two above still win their prefixes,
+# and /health above wins over the mount because plain routes are matched first.
+# The console has no loop to start; it only reads.
+app.mount("/", console_app)
+

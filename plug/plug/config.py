@@ -32,6 +32,11 @@ JOBS_DB = STATE_DIR / "jobs.db"
 
 
 EVENT_LOG = STATE_DIR / "events.jsonl"
+
+# The same events, indexed. The JSONL file stays the thing you read when
+# something is on fire; this is the thing a UI can query and stream from.
+EVENTS_DB = STATE_DIR / "events.db"
+
 CHAT_DB = Path(os.path.expanduser("~/Library/Messages/chat.db"))
 
 DEFAULT_PERSONA = """You are Plug, replying to text messages on Manjesh's behalf.
@@ -153,7 +158,41 @@ class WorkersConfig(BaseModel):
     brightdata: BrightDataConfig = Field(default_factory=BrightDataConfig)
 
 
+class ConsoleConfig(BaseModel):
+    """The read-only UI server."""
+
+    history_hours: float = 72.0
+    """Window the monitoring view summarises."""
+
+    reveal_handles: bool = False
+    """Show real chat names and phone numbers instead of the anonymised key the
+    event log uses. Off by default so the console can be screenshared without
+    putting a group's numbers on someone else's monitor."""
+
+    allow_dispatch: bool = True
+    """Let a human start a lookup from the UI for a chat nobody tagged. The
+    resulting follow-up still passes every send gate; what this skips is the
+    mention check, on the grounds that a person pressing a button is a stronger
+    signal of intent than their name appearing in a message."""
+
+    supervisor_health_url: str | None = "http://127.0.0.1:8002/health"
+    """Where to ask whether sending is really live.
+
+    The console cannot answer that from its own environment. PLUG_DRY_RUN is
+    read by whichever process holds the send path, and that is the supervisor —
+    started from its own shell, possibly with different exports. A console that
+    reports its own env says "sending" while the supervisor quietly drops every
+    reply, which is the one lie a safety banner must never tell.
+
+    Set to null when the console runs somewhere it cannot reach the supervisor;
+    it then falls back to its own PLUG_DRY_RUN and says the answer is unverified.
+    """
+
+    supervisor_health_timeout_seconds: float = 1.0
+
+
 class ModelsConfig(BaseModel):
+
     """Which model plays which role.
 
     A seam, not an abstraction: each role names a model, so moving one to another
@@ -215,6 +254,8 @@ class Config(BaseModel):
 
 
     models: ModelsConfig = Field(default_factory=ModelsConfig)
+    console: ConsoleConfig = Field(default_factory=ConsoleConfig)
+
 
     chats: ChatFilter = Field(default_factory=ChatFilter)
     group: GroupConfig = Field(default_factory=GroupConfig)

@@ -283,7 +283,21 @@ class Spool:
 
     # ---- observability -----------------------------------------------------
 
+    def latest_for_chat(self, chat_guid: str) -> SpoolItem | None:
+        """The most recent pooled message from one chat, whatever its state.
+
+        Used to address a chat that no live message is currently driving — the
+        console can start a lookup for a conversation that has gone quiet, and
+        the send strategies still need a handle and a service to aim at.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM spool WHERE chat_guid = ? ORDER BY id DESC LIMIT 1",
+            (chat_guid,),
+        ).fetchone()
+        return _row_to_item(row) if row else None
+
     def stats(self) -> SpoolStats:
+
         counts = {
             row["state"]: int(row["n"])
             for row in self._conn.execute("SELECT state, COUNT(*) AS n FROM spool GROUP BY state")
