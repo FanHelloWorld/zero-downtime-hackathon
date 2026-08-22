@@ -13,6 +13,13 @@ new messages into the pool. The **supervisor agent** leases messages out of the
 pool, decides what to say, and sends the reply by driving Messages.app through
 AppleScript.
 
+It also listens when nobody is talking to it. In a group chat the agent reads
+every burst, remembers what it learns about the people in it, and — when someone
+finally pulls it in — can say "hold on, let me look" and dispatch a background
+**worker** that researches a real answer on the web and follows up. See
+[Workers](#workers).
+
+
 ```
                     ┌──────────────────────┐
    ~/Library/       │  watchdog  :8001     │
@@ -50,9 +57,16 @@ Read this before you run it. Some of these will surprise you otherwise.
 - **Dry-run mode looks like a bug if you forget it's on.** With `PLUG_DRY_RUN=1`
   the agent runs and drafts a reply, then deliberately stops short of
   AppleScript. Check `dry_run` in `/health`.
+- **A delegated lookup costs two messages.** The holding line and the answer are
+  both real sends, both counted against the rate limits.
+- **Workers read the live web.** With `BRIGHTDATA_API_TOKEN` set, a worker's
+  research runs against Bright Data's MCP server (billed by them; 5,000 requests
+  a month are free). Without it, workers still run but answer from what the model
+  already knows.
 - **It is hackathon-grade.** The HTTP endpoints have no authentication, the queue
   is SQLite rather than a real broker, and the project name is a placeholder.
   Bind to localhost and don't put it on a shared machine.
+
 
 Guardrails that are on by default: a kill switch, 6 replies per chat per hour
 (30 overall), a loop guard so two instances can't ping-pong forever, and filters
@@ -64,14 +78,18 @@ that drop verification codes and short-code senders.
 main.py             both apps in one uvicorn process (convenience only)
 plug/               shared core
                     config, models, events, safety, spool,
-                    service (thread + instance lock), notify
+                    service (thread + instance lock), notify, mention
 watchdog/           server 1 — chat.db → pool
                     db, decode, state, server, cli, main (ASGI)
 supervisor_agent/   server 2 — pool → reply
                     agent, send, buffer, memory, server, cli, main (ASGI)
+                    planner, personality, dossier   reading the room
+                    jobs, llm                       delegated work, model seam
+                    workers/  registry, mcp, runner background lookups
                     applescript/  three addressing strategies
-tests/              124 tests
+tests/              260 tests
 ```
+
 
 Note: the local `watchdog/` package shadows the PyPI package of the same name.
 Plug does not depend on that library; if you add a dependency that does, rename
@@ -89,6 +107,9 @@ for uvicorn. Endpoints:
 | `POST /notify` | — | wake the drain loop (the watchdog calls this) |
 | `POST /pause` `/resume` | — | kill switch |
 | `GET /dead` `POST /dead/requeue` | — | dead-letter queue |
+| `GET /plan` | — | what it has been thinking, per chat |
+| `GET /jobs` | — | background lookups and what became of them |
+
 
 **The test suite**, by area:
 
@@ -105,6 +126,12 @@ for uvicorn. Endpoints:
 | `test_db` / `test_decode` | 9 | live chat.db reads and the `attributedBody` decoder |
 | `test_memory` / `test_watchdog_state` | 7 | history, send log, cold-start guard |
 | `test_send_injection` | 3 | AppleScript injection safety, via real `osascript` |
+| `test_delegate` | 19 | when a lookup may be dispatched, and every check that stops one |
+| `test_dossier` | 19 | fact merging, address coarsening, corrupt-state degradation |
+| `test_workers` | 19 | the MCP request shape, retries, timeouts, concurrency cap |
+| `test_jobs` | 16 | job lease semantics, quotas, crash recovery |
+| `test_follow_up` | 12 | delivering a promised answer, and the one safety exemption |
+
 
 ## Setup
 
@@ -113,6 +140,11 @@ uv sync
 cp .env.example .env      # add your ANTHROPIC_API_KEY
 uv run plug doctor        # runs both servers' preflight checks
 ```
+
+`.env` takes a second, optional key: `BRIGHTDATA_API_TOKEN` gives background
+workers real web access. Without it everything still runs — `doctor` says
+`warn no web research` and workers answer from model knowledge alone.
+
 
 `doctor` verifies the whole chain: chat.db readability, WAL freshness, the
 `attributedBody` decoder, Messages automation permission, the API key, the
@@ -233,7 +265,95 @@ so one can restart without the other. `main.py` at the repo root mounts both
 under one uvicorn process for single-container deploys; it works, but it gives
 up the isolation the split exists for.
 
+## Workers
+
+Some questions cannot be answered from a language model's memory. "Where should
+we eat?" is one: the answer depends on where these particular people are, when
+they can get there, and what is actually open. So the agent can go and look.
+
+```
+       plan every burst            addressed?              behind the scenes
+   ┌───────────────────────┐   ┌────────────────┐   ┌────────────────────────────┐
+   │ facts_learned ─┐      │   │ delegate(      │   │ 1. research ──▶ Bright Data│
+   │ action ────────┼──▶   │──▶│   objective,   │──▶│    (MCP, server-side)      │
+   │                │      │   │   holding_text)│   │ 2. compose in the group's  │
+   │        dossier ◀┘     │   └───────┬────────┘   │    own register            │
+   └───────────────────────┘           │            └─────────────┬──────────────┘
+                              "hold on, lemme look"               │
+                                    sent now                      ▼
+                                                    supervisor loop delivers
+                                                       the follow-up
+```
+
+**The dossier** is what the agent knows about a chat: who is where, when they are
+free, what they will not eat, the standing vibe. The planner reports only what
+each burst *taught* it; `dossier.py` merges those facts in Python. That split is
+deliberate — a plan is a fresh read every time, so letting the model restate the
+whole picture would mean an address given on Tuesday disappearing on Wednesday.
+Read it with `GET /plan`.
+
+**Delegating** is a third tool alongside `send_reply` and `skip`. It is offered
+only when a worker could actually run, and calling it does two things: sends a
+short holding message now, and files a job. The reply the model would otherwise
+have written is replaced by the promise.
+
+**A worker** is a prompt plus an allowlisted toolset, not a class — the same
+shape as the personality pillars. `food` is the only kind so far: a connoisseur
+that works the constraints in order (who can reach where, by when, and what they
+can't eat) before it works the ratings.
+
+**Research runs through Anthropic's MCP connector**, which holds the connection
+to Bright Data's hosted MCP server on Anthropic's side. Nothing MCP-shaped runs
+on this machine — no client, no `npx`, no subprocess, no extra terminal. The
+toolset is an allowlist (`default_config.enabled: false`, then named tools turned
+back on) because that server exposes 60+ tools including browser automation.
+
+Research and voice are separate calls on purpose. The researcher reads scraped
+pages and produces notes; the composer never sees a tool and turns notes into one
+text message. A poisoned page can therefore make the findings wrong, but it has
+nothing to call and no voice to borrow.
+
+### The job lifecycle
+
+`~/.plug/jobs.db` is a leased queue like the pool, for the same reason: the
+moment the chat is told to expect an answer, that promise has to survive a crash.
+
+| Outcome | Job state |
+|---|---|
+| worker found something, follow-up sent | `delivered` |
+| worker failed, attempts remain | back to `queued` |
+| worker failed for good | `failed`, or `delivered` with an apology line |
+| ran past `job_timeout_seconds` | `expired`, or an apology |
+| safety refused the follow-up | `blocked` |
+
+```bash
+uv run plug-supervisor jobs           # what was promised, and what came of it
+curl -s localhost:8002/jobs | python3 -m json.tool
+```
+
+### What holds it back
+
+| Guard | Where |
+|---|---|
+| must have been named in the chat | `plug/mention.py`, re-checked inside the tool |
+| one lookup per chat at a time | `JobStore.active_for_chat` |
+| `per_chat_cooldown_seconds`, `max_per_chat_per_day` | `JobStore`, not the prompt |
+| holding message and follow-up both pass `can_send` | `plug/safety.py` |
+| street numbers stripped before anything leaves the machine | `share_locations: coarse` |
+| `PLUG_DRY_RUN=1` suppresses both sends | worker still runs, so the chain is checkable |
+
+The follow-up is the one message exempt from the loop guard, and only from that.
+The guard exists to stop two automated instances answering each other forever; a
+follow-up is the second half of a request a human made, it fires once per job,
+and it is already capped by the cooldown and the daily quota. Everything else —
+pause, rate limits, length, deny patterns — still applies, which is why a job can
+end up `blocked` after the worker succeeded.
+
+**Cost:** two sends per delegation, against 6 per chat per hour. A chat that
+delegates three times in an hour is rate-limited.
+
 ## Troubleshooting
+
 
 | Symptom | Cause |
 |---|---|
@@ -243,7 +363,12 @@ up the isolation the split exists for.
 | `AlreadyRunning` on startup | Another instance holds the lock. `pgrep -fl uvicorn`. The lock is `flock`-based and can never go stale, so if nothing is running that's a bug. |
 | Config edits ignored | Config is read at import. Restart, and check `config_source` in `/status`. |
 | Nothing is pooled at all | Check Full Disk Access, then `uv run plug-watchdog doctor`. |
-| Replies stop after a while | Rate limit (6/chat/hour). Check `plug status`. |
+| Replies stop after a while | Rate limit (6/chat/hour). Remember a delegation costs two. Check `plug status`. |
+| It never delegates | `workers.enabled`, or the chat is inside its cooldown / daily quota. `plug-supervisor jobs` shows the last one. |
+| Recommendations are vague or dated | No `BRIGHTDATA_API_TOKEN`, so the worker had no web access. `doctor` says so. |
+| A job sits in `ready` | The follow-up is being refused — paused, or rate-limited. The `note` on the job says which. |
+| A job sits in `running` forever | It is retired after `job_timeout_seconds` on the next tick. |
+
 
 ## Why it's split
 
@@ -266,6 +391,67 @@ That split buys three things:
   network and to Messages.app cannot read your message history.
 - **Policy reloads cheaply.** Rate limits, deny patterns, and the kill switch all
   live supervisor-side, so changing them means restarting the supervisor alone.
+
+## Group chats: read always, speak rarely
+
+In a group chat the agent behaves differently from a 1:1. It reads every burst
+and stays silent unless someone says its name.
+
+**The planning pass.** On each burst it runs a separate model call that produces
+a structured plan — what's happening, the room's mood, open threads, what it
+*would* say, and which register it would use — and then does nothing with it.
+Same shape as plan mode: form an intent, write it down, don't act. The plan is
+stored per chat and fed to the next planning pass, so its read is continuous
+rather than reconstructed after the fact.
+
+Watch it think without it ever speaking:
+
+```bash
+curl -s localhost:8002/plan | python3 -m json.tool     # every chat it's following
+curl -s "localhost:8002/plan?chat=<hash>&limit=5"      # how one read evolved
+```
+
+**The four pillars.** The planner picks which register to lead with based on the
+tone it just read — one voice with four settings, not four bots.
+
+| Pillar | Register |
+|---|---|
+| `hype` | Extremely enthusiastic. Genuinely excited, amplifies other people. |
+| `flow` | Extremely laid-back. Goes with it, never escalates. |
+| `drama` | Theatrical. Everything is a Moment, stakes inflated for comedy. |
+| `deadpan` | Dry and understated. The joke lands because it isn't announced. |
+
+Observed selections: someone's good news → `hype`; a bereavement → `flow`;
+logistics → `flow`; petty bickering → `drama`.
+
+**Tagging is text-based, and it is authoritative.** The agent speaks when its
+name appears on a word boundary — `plug`, `@plug`, `Plug,` — but not inside
+`plugin`, `unplugged`, or `plug-in`. iMessage's own `has_unseen_mention` column
+is not usable for this: it's an *unseen* flag, cleared the moment you read the
+message, and only 9 rows in 156,000 ever had it set.
+
+The planner also reports its own `addressed_to_us`, but that is advisory only.
+The model does not get to decide it was invited — that would be asking a model
+to gate an action it wants to take. The detector decides, the send tool
+re-checks, and there is a test asserting a message that *claims* to tag the
+agent still results in silence.
+
+**Config** (`plug.yml`):
+
+```yaml
+group:
+  agent_name: plug
+  aliases: []
+  respond_when_tagged_only: true   # turning this off puts an LLM into a
+                                   # friend group's chat uninvited
+  plan_every_burst: true           # one model call per burst, even when silent
+  answer_direct_questions: false   # treat "what do you think?" as a tag when
+                                   # we spoke recently — a guess, so off
+```
+
+**The loop guard is split** for groups. At intake it does not apply, or the agent
+would be blind to the conversation for 30 seconds after every reply — exactly
+the messages it needs to stay oriented. It applies at send time instead.
 
 ## How the watchdog alerts the agent
 
@@ -393,4 +579,7 @@ newest message rather than replying to your history.
 uv run pytest
 ```
 
-124 tests. Database-backed tests skip automatically without Full Disk Access.
+260 tests. Database-backed tests skip automatically without Full Disk Access.
+The worker tests stub the model and never reach the network, so they run
+identically with or without an API key.
+

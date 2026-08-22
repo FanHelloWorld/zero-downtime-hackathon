@@ -10,7 +10,14 @@ Failure handling follows the pool's lease semantics:
 * handled, skipped, or blocked → terminal, acknowledged
 * transient failure (API error, send failure) → returned for retry
 * repeated failure → dead-lettered rather than retried forever
+
+Delegated work is the one thing that outlives a batch. When the agent promises to
+look something up, the pool item is settled immediately and the promise moves to
+the job store; the loop then starts worker threads and, later, delivers what they
+found. Delivery happens here rather than on the worker thread on purpose — every
+message this system sends leaves from the loop, through one gate.
 """
+
 
 from __future__ import annotations
 
@@ -25,9 +32,13 @@ from plug.config import Config
 from plug.safety import ReplyPolicy
 from plug.spool import Spool
 
+from . import send
 from .agent import Agent
 from .buffer import Buffer, WorkBatch
+from .jobs import BLOCKED, DELIVERED, JobStore
 from .memory import Memory
+from .workers import WorkerPool
+
 
 STAGE = "supervisor"
 
@@ -43,9 +54,15 @@ class SupervisorStats:
     blocked: int = 0
     retried: int = 0
     failed: int = 0
+    planned: int = 0
+    delegated: int = 0
+    jobs_started: int = 0
+    follow_ups: int = 0
+    follow_ups_blocked: int = 0
 
 
 class SupervisorServer:
+
     def __init__(
         self,
         config: Config,
@@ -56,6 +73,8 @@ class SupervisorServer:
         *,
         echo: bool = False,
         owner: str | None = None,
+        jobs: JobStore | None = None,
+        workers: WorkerPool | None = None,
     ) -> None:
         self.config = config
         self.spool = spool
@@ -64,6 +83,11 @@ class SupervisorServer:
         self.agent = agent
         self.buffer = Buffer(config)
         self.echo = echo
+        # Both optional: a supervisor with workers switched off is a valid
+        # configuration, and the reply path does not depend on them.
+        self.jobs = jobs
+        self.workers = workers
+
         # Identifies which supervisor holds a lease, so a stuck one is traceable.
         self.owner = owner or f"{socket.gethostname()}:{int(time.time())}"
         self.stats = SupervisorStats()
@@ -158,7 +182,18 @@ class SupervisorServer:
                 events.emit(STAGE, "retry", chat=work.chat_guid, attempts=work.max_attempts, echo=self.echo)
             return
 
-        if outcome.sent:
+        if outcome.planned:
+            # Read the room and stayed quiet: the normal group-chat outcome.
+            # Terminal — the plan is already stored, so there is nothing to retry.
+            self.stats.planned += 1
+            self.spool.drop(work.ids, outcome.reason or "planned, not addressed")
+        elif outcome.delegated:
+            # Said something and filed a job. Terminal here: the promise now lives
+            # in the job store, and retrying the batch would file it twice.
+            self.stats.delegated += 1
+            self.spool.ack(work.ids, f"delegated {outcome.job_key}")
+        elif outcome.sent:
+
             self.stats.sent += 1
             self.spool.ack(work.ids, "replied")
         elif outcome.skipped:
@@ -170,8 +205,99 @@ class SupervisorServer:
             self.stats.blocked += 1
             self.spool.drop(work.ids, f"blocked: {outcome.reason}")
         else:
-            self.stats.skipped += 1
-            self.spool.drop(work.ids, outcome.reason or "no action")
+            # The model answered in prose instead of calling a tool, so nothing
+            # was sent. Retry rather than drop: dropping makes this look exactly
+            # like a deliberate silence, and it is the one failure a person in
+            # the chat would notice and we would not. Out of attempts, it
+            # dead-letters, where `plug-supervisor dead` can show it.
+            self.stats.retried += 1
+            self.spool.nack(
+                work.ids, outcome.reason or "no action", max_attempts=cfg.max_attempts
+            )
+            events.emit(
+                STAGE, "no_tool_call", chat=work.chat_guid,
+                reason=outcome.reason, attempts=work.max_attempts, echo=self.echo,
+            )
+
+
+    # ---- delegated work ---------------------------------------------------
+
+    def _pump_workers(self) -> int:
+        """Start whatever background work there is room for. Never raises."""
+        if self.workers is None:
+            return 0
+        try:
+            started = self.workers.pump()
+        except Exception as exc:
+            # A worker pool that cannot start jobs must not stop replies.
+            events.emit(STAGE, "worker_pump_error", error=repr(exc), echo=self.echo)
+            return 0
+        self.stats.jobs_started += started
+        return started
+
+    def _deliver_ready(self) -> int:
+        """Send the follow-ups workers have finished writing.
+
+        The loop thread does this, not the worker, so that every outbound message
+        passes the same gate. ``follow_up=True`` relaxes exactly one check — the
+        loop guard, which a worker finishing inside its window would otherwise
+        trip after the chat was told to expect an answer. Pause, rate limits and
+        the rest still apply, which is why a job can still end up blocked here.
+        """
+        if self.jobs is None:
+            return 0
+
+        delivered = 0
+        for job in self.jobs.deliverable(limit=5):
+            verdict = self.policy.can_send(
+                job.chat_guid, job.reply, is_group=job.is_group, follow_up=True
+            )
+            if not verdict:
+                self.stats.follow_ups_blocked += 1
+                self.jobs.settle(job.id, BLOCKED, verdict.reason)
+                events.emit(
+                    "safety", "send_blocked", chat=job.chat_guid,
+                    reason=verdict.reason, job=job.job_key, follow_up=True, echo=self.echo,
+                )
+                continue
+
+            if self.agent.dry_run:
+                self.memory.record_send(job.chat_guid, job.reply, dry_run=True)
+                self.jobs.settle(job.id, DELIVERED, "dry run")
+                events.emit(
+                    "send", "dry_run", chat=job.chat_guid, job=job.job_key,
+                    chars=len(job.reply), would_send=job.reply, follow_up=True,
+                    note="AppleScript NOT invoked — unset PLUG_DRY_RUN to send for real",
+                    echo=self.echo,
+                )
+                delivered += 1
+                continue
+
+            try:
+                result = send.deliver(job.reply, job.chat_guid, job.handle, job.service)
+            except send.SendError as exc:
+                # Terminal, like a blocked reply. Every addressing strategy has
+                # already failed, so Messages.app is wedged rather than busy —
+                # retrying each tick would spin, not recover.
+                self.stats.follow_ups_blocked += 1
+                self.jobs.settle(job.id, BLOCKED, f"send failed: {exc}")
+                events.emit(
+                    "send", "failed", chat=job.chat_guid, job=job.job_key,
+                    error=str(exc), follow_up=True, echo=self.echo,
+                )
+                continue
+
+            self.stats.follow_ups += 1
+            self.memory.record_send(job.chat_guid, job.reply, dry_run=False)
+            self.memory.append_history(job.chat_guid, "assistant", job.reply)
+            self.jobs.settle(job.id, DELIVERED, result.strategy)
+            events.emit(
+                "send", "delivered", chat=job.chat_guid, job=job.job_key,
+                strategy=result.strategy, chars=len(job.reply), follow_up=True,
+                echo=self.echo,
+            )
+            delivered += 1
+        return delivered
 
     def tick(self) -> bool:
         """One pass. Returns True if there was anything to do."""
@@ -180,7 +306,10 @@ class SupervisorServer:
         due = self.buffer.due()
         for work in due:
             self._dispatch(work)
-        return bool(buffered or due)
+        started = self._pump_workers()
+        delivered = self._deliver_ready()
+        return bool(buffered or due or started or delivered)
+
 
     def run(self, *, handle_signals: bool = True) -> SupervisorStats:
         if handle_signals:
@@ -219,9 +348,21 @@ class SupervisorServer:
 
     def _shutdown(self) -> None:
         """Hand back anything still buffered instead of holding it until lease expiry."""
+        if self.workers is not None:
+            # Stop claiming, then hand back what this owner still holds. Threads
+            # already running are daemons and will be killed with the process;
+            # their jobs return to 'queued' and are re-run on the next start
+            # rather than sitting in 'running' until the lease lapses.
+            self.workers.request_stop()
+            if self.jobs is not None:
+                released = self.jobs.release(self.workers.owner)
+                if released:
+                    events.emit(STAGE, "jobs_released", count=released, echo=self.echo)
+
         leftover = self.buffer.drain()
         if not leftover:
             return
         ids = [i for work in leftover for i in work.ids]
         self.spool.nack(ids, "supervisor shut down", max_attempts=self.config.supervisor.max_attempts)
         events.emit(STAGE, "released_on_shutdown", count=len(ids), echo=self.echo)
+

@@ -85,20 +85,57 @@ class ReplyPolicy:
         # Loop guard: if we just sent to this chat, an immediate inbound message
         # may be our own text echoing back through another device, or another
         # bot answering us. Two of these left running would ping-pong forever.
-        last = self.memory.last_send_ts(message.chat_guid)
-        if last is not None and (time.time() - last) < safety.loop_window_seconds:
+        #
+        # Group chats are exempt *here* and gated at send time instead. In a
+        # group the conversation keeps moving after we speak, and those are
+        # exactly the messages the agent needs to read to stay oriented —
+        # dropping them at intake would blind it for the whole window.
+        if not message.is_group and self._inside_loop_window(message.chat_guid):
             return Verdict(False, "inside loop-guard window")
 
         return ALLOW
 
+    def _inside_loop_window(self, chat_guid: str) -> bool:
+        last = self.memory.last_send_ts(chat_guid)
+        if last is None:
+            return False
+        return (time.time() - last) < self.config.safety.loop_window_seconds
+
     # ---- immediately before delivery --------------------------------------
 
-    def can_send(self, chat_guid: str, text: str) -> Verdict:
-        """Final gate. Called from inside the agent's send tool."""
+    def can_send(
+        self,
+        chat_guid: str,
+        text: str,
+        *,
+        is_group: bool = False,
+        follow_up: bool = False,
+    ) -> Verdict:
+        """Final gate. Called from inside the agent's send tool.
+
+        ``follow_up`` marks the delivery of a background job the agent already
+        promised in this chat. It relaxes the loop guard and nothing else — every
+        other check below still applies.
+
+        The exemption is narrow on purpose. The loop guard exists to stop two
+        automated instances answering each other forever; a follow-up is the
+        second half of one request a human made, it fires at most once per job,
+        and the job itself is already bounded by a per-chat cooldown and a daily
+        quota. Without the exemption a worker that finishes inside the window —
+        which is most of them — would be silently discarded after the chat was
+        told to expect an answer.
+        """
         safety = self.config.safety
 
         if PAUSE_FILE.exists():
             return Verdict(False, "paused (kill switch active)")
+
+        # The group half of the loop guard, deferred from intake so that reading
+        # the room stayed possible. Being tagged twice inside the window is rare;
+        # waiting it out is cheaper than a runaway exchange with another bot.
+        if is_group and not follow_up and self._inside_loop_window(chat_guid):
+            return Verdict(False, "inside loop-guard window")
+
 
         if not text or not text.strip():
             return Verdict(False, "empty reply")

@@ -13,6 +13,7 @@ Environment:
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -22,14 +23,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from plug import events, safety as safety_mod
-from plug.config import SPOOL_DB, Config, load_dotenv
+from plug.config import JOBS_DB, SPOOL_DB, Config, load_dotenv
 from plug.safety import ReplyPolicy
 from plug.service import BackgroundLoop
 from plug.spool import Spool
 
 from .agent import Agent
+from .jobs import JobStore
 from .memory import Memory
 from .server import SupervisorServer
+from .workers import WorkerPool
+
 
 load_dotenv()
 
@@ -47,10 +51,19 @@ def _build() -> tuple[SupervisorServer, list[Any]]:
 
     spool = Spool()
     memory = Memory()
+    jobs = JobStore()
     policy = ReplyPolicy(config, memory)
-    agent = Agent(config, memory, policy, dry_run=DRY_RUN)
-    server = SupervisorServer(config, spool, memory, policy, agent, echo=False)
-    return server, [spool, memory]
+    agent = Agent(config, memory, policy, dry_run=DRY_RUN, jobs=jobs)
+    server = SupervisorServer(
+        config, spool, memory, policy, agent, echo=False, jobs=jobs
+    )
+    # The pool is given the loop's store for claiming and the class itself for
+    # worker threads, which must open their own connection.
+    server.workers = WorkerPool(
+        config, jobs, open_store=JobStore, client=agent.client, notify=server.notify
+    )
+    return server, [spool, memory, jobs]
+
 
 
 loop = BackgroundLoop("supervisor", _build)
@@ -94,15 +107,26 @@ def health() -> dict[str, Any]:
 def status() -> dict[str, Any]:
     server = _server()
     # Fresh connections per request — the loop's belong to its own thread.
-    with Spool() as spool, Memory() as memory:
+    with Spool() as spool, Memory() as memory, JobStore() as jobs:
         pool = asdict(spool.stats())
         sends = memory.sends_in_last_hour()
+        job_stats = asdict(jobs.stats())
     return {
         "owner": server.owner,
         "dry_run": DRY_RUN,
         "paused": safety_mod.is_paused(),
         "stats": asdict(server.stats),
         "pool": pool,
+        "jobs": job_stats,
+        "workers": {
+            "enabled": config.workers.enabled,
+            "kinds": config.workers.kinds,
+            "running": server.workers.running if server.workers else 0,
+            "max_concurrent": config.workers.max_concurrent,
+            # Whether the research step actually has web access. The token is
+            # never echoed; only whether one is present.
+            "web_access": bool(os.environ.get(config.workers.brightdata.token_env)),
+        },
         "sends_last_hour": sends,
         "config": {
             "model": config.model,
@@ -112,9 +136,10 @@ def status() -> dict[str, Any]:
             "global_per_hour": config.safety.global_per_hour,
             "only_handles": config.chats.only_handles,
         },
-        "paths": {"spool": str(SPOOL_DB)},
+        "paths": {"spool": str(SPOOL_DB), "jobs": str(JOBS_DB)},
         "config_source": config.source,
     }
+
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
@@ -139,11 +164,89 @@ def metrics() -> str:
         if value is None:
             continue
         lines += [f"# TYPE plug_pool_{key} gauge", f"plug_pool_{key} {value}"]
+
+    with JobStore() as jobs:
+        for key, value in asdict(jobs.stats()).items():
+            lines += [f"# TYPE plug_jobs_{key} gauge", f"plug_jobs_{key} {value}"]
     return "\n".join(lines) + "\n"
+
+
+@app.get("/plan")
+
+def plan(chat: str | None = None, limit: int = 5) -> dict[str, Any]:
+    """What the agent is thinking about a group chat, without having spoken.
+
+    Chats are keyed by the same hash the event log uses, so this can be read
+    alongside `plug tail -f` without exposing chat identifiers. Pass no `chat`
+    to list every conversation being followed.
+    """
+    with Memory() as memory:
+        guids = memory.chats_with_plans()
+
+        if chat is None:
+            return {
+                "following": [
+                    {
+                        "chat": events.anon(guid),
+                        "latest": json.loads(memory.latest_plan(guid) or "null"),
+                    }
+                    for guid in guids
+                ]
+            }
+
+        target = next((g for g in guids if events.anon(g) == chat or g == chat), None)
+        if target is None:
+            raise HTTPException(404, f"no plans recorded for {chat}")
+
+        return {
+            "chat": events.anon(target),
+            "plans": [
+                {"ts": ts, "plan": json.loads(payload)}
+                for ts, payload in memory.recent_plans(target, limit)
+            ],
+        }
+
+
+@app.get("/jobs")
+def jobs(chat: str | None = None, limit: int = 20) -> dict[str, Any]:
+    """Background lookups the agent promised, and what became of them.
+
+    Keyed by the same hash as the event log and `/plan`, so a job can be traced
+    from the plan that proposed it to the message that answered it. ``findings``
+    is deliberately absent — it is scraped page content, sometimes long, and the
+    interesting part is the state machine.
+    """
+    with JobStore() as store:
+        if chat is None:
+            rows = store.recent(limit=limit)
+        else:
+            guids = store.chats()
+            target = next((g for g in guids if events.anon(g) == chat or g == chat), None)
+            if target is None:
+                raise HTTPException(404, f"no jobs recorded for {chat}")
+            rows = store.recent(target, limit=limit)
+
+        return {
+            "jobs": [
+                {
+                    "job": job.job_key,
+                    "chat": events.anon(job.chat_guid),
+                    "kind": job.kind,
+                    "state": job.state,
+                    "attempts": job.attempts,
+                    "age_seconds": round(job.age, 1),
+                    "objective": job.objective,
+                    "reply": job.reply,
+                    "note": job.note,
+                }
+                for job in rows
+            ]
+        }
 
 
 @app.post("/notify")
 def notify() -> dict[str, Any]:
+
     """Wake the drain loop. Called by the watchdog the moment it pools messages.
 
     Deliberately trivial: no auth, no payload contract, no message data. It only

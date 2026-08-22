@@ -37,6 +37,7 @@ def make_message(
     chat_guid: str = "any;-;+15551234567",
     service: str = "iMessage",
     style: int = STYLE_DIRECT,
+    participants: tuple[str, ...] = (),
 ) -> Message:
     return Message(
         rowid=rowid,
@@ -49,6 +50,7 @@ def make_message(
         service=service,
         style=style,
         display_name=None,
+        participants=participants,
     )
 
 

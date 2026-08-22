@@ -24,6 +24,13 @@ SPOOL_DB = STATE_DIR / "spool.db"
 WATCHDOG_DB = STATE_DIR / "watchdog.db"
 SUPERVISOR_DB = STATE_DIR / "supervisor.db"
 
+# Background work the supervisor dispatched and has not finished delivering.
+# Its own file rather than a table in supervisor.db: worker threads and the loop
+# thread write it concurrently, and that wants WAL — which supervisor.db, opened
+# thread-bound with the default rollback journal, does not have.
+JOBS_DB = STATE_DIR / "jobs.db"
+
+
 EVENT_LOG = STATE_DIR / "events.jsonl"
 CHAT_DB = Path(os.path.expanduser("~/Library/Messages/chat.db"))
 
@@ -65,7 +72,108 @@ class SupervisorConfig(BaseModel):
     """Attempts before an item is dead-lettered instead of retried forever."""
 
 
+class GroupConfig(BaseModel):
+    """Group-chat behaviour: when the agent speaks, and how it prepares."""
+
+    agent_name: str = "plug"
+    """What people call it in the chat. Matched on word boundaries, so this
+    should be a word they'd actually type."""
+    aliases: list[str] = Field(default_factory=list)
+
+    respond_when_tagged_only: bool = True
+    """Silence unless addressed. Turning this off puts an LLM into a friend
+    group's conversation uninvited — it is on for a reason."""
+
+    plan_every_burst: bool = True
+    """Read the room on every burst, not just when addressed. Costs one model
+    call per burst; buys a reply that reflects the conversation it landed in."""
+
+    answer_direct_questions: bool = False
+    """Treat "what do you think?" as a tag when we spoke recently. Off by
+    default: it is a guess, and guessing wrong means interrupting."""
+
+    plan_max_tokens: int = 700
+
+
+class BrightDataConfig(BaseModel):
+    """Bright Data's hosted MCP server, reached through Anthropic's MCP connector.
+
+    Anthropic calls the server directly, so nothing runs locally: no MCP client,
+    no npx, no second process. That is what lets a worker do real web research
+    from inside the supervisor.
+    """
+
+    enabled: bool = True
+    url: str = "https://mcp.brightdata.com/mcp"
+    token_env: str = "BRIGHTDATA_API_TOKEN"
+    """Env var holding the API token. It is appended to the URL as ?token=,
+    which is how this server authenticates — so the URL is a secret."""
+
+    tools: list[str] = Field(
+        default_factory=lambda: [
+            "search_engine",
+            "scrape_as_markdown",
+            "web_data_google_maps_reviews",
+        ]
+    )
+    """Allowlist. The server exposes 60+ tools including browser automation;
+    everything not named here is disabled on the request."""
+
+    groups: list[str] = Field(default_factory=lambda: ["business"])
+    """Bright Data tool groups to load, as ?groups=. Beyond the always-on core
+    tools, a tool must be in a loaded group before the allowlist can enable it."""
+
+
+class WorkersConfig(BaseModel):
+    """Background agents the supervisor dispatches when a reply needs a lookup."""
+
+    enabled: bool = True
+    kinds: list[str] = Field(default_factory=lambda: ["food"])
+    """Which worker kinds may be dispatched. A kind the planner names but this
+    list omits is simply not offered to the agent."""
+
+    max_concurrent: int = 2
+    job_timeout_seconds: float = 150.0
+    per_chat_cooldown_seconds: float = 900.0
+    """Quiet period after a job before the same chat may dispatch another."""
+    max_per_chat_per_day: int = 4
+
+    share_locations: str = "coarse"
+    """coarse | exact. Coarse strips street numbers before anything leaves this
+    machine — people who post an address into a group chat did not agree to it
+    being sent to a scraping API."""
+
+    apologize_on_failure: bool = True
+    """Say one short line when a job fails. The holding message promised an
+    answer; silence leaves it dangling."""
+
+    research_max_tokens: int = 3000
+    compose_max_tokens: int = 400
+
+    brightdata: BrightDataConfig = Field(default_factory=BrightDataConfig)
+
+
+class ModelsConfig(BaseModel):
+    """Which model plays which role.
+
+    A seam, not an abstraction: each role names a model, so moving one to another
+    provider later is a config change plus one adapter. ``worker_research`` is the
+    exception — the MCP connector is an Anthropic API feature, so that role cannot
+    leave Anthropic without an in-process MCP client.
+    """
+
+    reply: str | None = None
+    planner: str | None = None
+    worker_research: str | None = None
+    worker_compose: str | None = None
+
+    def resolve(self, role: str, default: str) -> str:
+        """The model for ``role``, falling back to the top-level ``model``."""
+        return getattr(self, role, None) or default
+
+
 class ChatFilter(BaseModel):
+
     include_groups: bool = True
     include_1to1: bool = True
     services: list[str] = Field(default_factory=lambda: ["iMessage", "SMS", "RCS"])
@@ -99,8 +207,23 @@ class Config(BaseModel):
     persona: str = DEFAULT_PERSONA
     history_turns: int = 12
 
+    default_pillar: str = "flow"
+    """Register to lead with when no planner has read the room — every one-to-one
+    conversation, and any group burst whose plan failed. One of the four in
+    ``supervisor_agent/personality.py``; an unknown name falls back rather than
+    raising."""
+
+
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
+
     chats: ChatFilter = Field(default_factory=ChatFilter)
+    group: GroupConfig = Field(default_factory=GroupConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    workers: WorkersConfig = Field(default_factory=WorkersConfig)
+
+    def model_for(self, role: str) -> str:
+        return self.models.resolve(role, self.model)
+
 
     source: str = "defaults"
     """Where this config came from, so "which config am I running?" is answerable.

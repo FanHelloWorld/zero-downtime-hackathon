@@ -171,3 +171,46 @@ def test_empty_reply_rejected(config, memory):
 def test_agent_cannot_relay_an_otp_outward(config, memory):
     """Deny patterns apply to outbound text too, not just inbound."""
     assert not ReplyPolicy(config, memory).can_send("chat", "sure, the code is 481920 for verification")
+
+
+# ---- the follow-up exemption ----------------------------------------------
+
+
+def test_the_loop_guard_blocks_an_ordinary_group_reply(config, memory):
+    config.safety.loop_window_seconds = 3600
+    memory.record_send("chat", "we just spoke", dry_run=False)
+    verdict = ReplyPolicy(config, memory).can_send("chat", "and again", is_group=True)
+    assert not verdict and "loop-guard" in verdict.reason
+
+
+def test_a_follow_up_is_allowed_through_the_loop_guard(config, memory):
+    """A promised answer arriving inside the window is not a runaway exchange."""
+    config.safety.loop_window_seconds = 3600
+    memory.record_send("chat", "hang on, lemme look", dry_run=False)
+    assert ReplyPolicy(config, memory).can_send(
+        "chat", "el farolito", is_group=True, follow_up=True
+    )
+
+
+def test_the_follow_up_exemption_covers_nothing_else(config, memory):
+    """Every other gate must still close, or it is a hole rather than an exemption."""
+    policy = ReplyPolicy(config, memory)
+    config.safety.max_reply_chars = 5
+    assert not policy.can_send("chat", "far too long", follow_up=True)
+    assert not policy.can_send("chat", "   ", follow_up=True)
+    assert not policy.can_send("chat", "the code is 481920 for verification", follow_up=True)
+
+    config.safety.max_reply_chars = 600
+    config.safety.per_chat_per_hour = 1
+    memory.record_send("chat", "one", dry_run=False)
+    assert not policy.can_send("chat", "two", follow_up=True)
+
+
+def test_a_paused_system_sends_no_follow_ups(config, memory):
+    from plug.safety import pause, resume
+
+    pause()
+    try:
+        assert not ReplyPolicy(config, memory).can_send("chat", "hi", follow_up=True)
+    finally:
+        resume()

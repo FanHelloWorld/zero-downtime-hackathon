@@ -36,6 +36,13 @@ class Message:
     """iMessage, SMS, or RCS — taken from chat.service_name."""
     style: int
     display_name: str | None
+    participants: tuple[str, ...] = ()
+    """Every handle in the chat, including members who haven't spoken.
+
+    Read from chat_handle_join by the watchdog and carried through the pool.
+    The supervisor has no chat.db access, so this is the only way it can know
+    who is in the room.
+    """
 
     @property
     def is_group(self) -> bool:
@@ -65,6 +72,19 @@ class Batch:
     @property
     def service(self) -> str:
         return self.last.service
+
+    @property
+    def roster(self) -> tuple[str, ...]:
+        """Everyone in the chat: the declared members plus anyone observed speaking.
+
+        The union matters because the declared roster can lag — a member added
+        mid-conversation shows up as a speaker before chat_handle_join catches up.
+        """
+        seen = list(self.last.participants)
+        for message in self.messages:
+            if message.handle and message.handle not in seen:
+                seen.append(message.handle)
+        return tuple(seen)
 
     def transcript(self) -> str:
         """Render the burst for the agent prompt, attributing each line."""
