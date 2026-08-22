@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+
+# Local scratch: throwaway configs, some containing real phone numbers
+scratch/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# macOS
+.DS_Store

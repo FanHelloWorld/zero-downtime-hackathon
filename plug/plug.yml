@@ -1,0 +1,51 @@
+# One config, two servers. Each reads the whole file and acts on its own section.
+
+watchdog:
+  poll_interval_seconds: 3
+  read_limit: 200          # max chat.db rows pulled per tick
+  purge_after_days: 7      # settled pool rows older than this are deleted
+  # Alert the supervisor the instant something is pooled, instead of letting it
+  # wait out idle_sleep_seconds. Optional: the supervisor still polls, so this
+  # only removes latency. Set to null when running the supervisor from the CLI
+  # (no HTTP surface) or on another host.
+  notify_url: http://127.0.0.1:8002/notify
+  notify_timeout_seconds: 2
+
+supervisor:
+  lease_seconds: 120       # how long a claimed item stays claimed before reclaim
+  lease_limit: 50
+  idle_sleep_seconds: 1     # backstop poll; the watchdog's alert usually beats it
+  debounce_seconds: 4      # quiet period before a burst goes to the agent
+  max_batch: 10
+  max_attempts: 3          # tries before an item is dead-lettered
+
+model: claude-haiku-4-5
+max_tokens: 1024
+history_turns: 12
+
+persona: |
+  You are Plug, replying to text messages on Manjesh's behalf.
+  Keep replies short and natural — one or two sentences, the way a person texts.
+  Match the tone of the conversation. Be warm but never over-familiar.
+
+# Shared by both servers: the watchdog uses these to decide what to pool,
+# the supervisor to decide what to answer.
+chats:
+  include_groups: true
+  include_1to1: true
+  services: [iMessage, SMS, RCS]
+  # Strongly recommended while testing: restrict to handles you control.
+  # Leave empty to reply to everyone.
+  only_handles: []
+
+safety:
+  per_chat_per_hour: 6
+  global_per_hour: 30
+  loop_window_seconds: 30
+  max_reply_chars: 600
+  never_reply_to: []
+  shortcode_max_digits: 6
+  deny_patterns:
+    - '\b\d{4,8}\b.{0,40}\b(code|verification|verify|OTP|passcode|one[- ]time)\b'
+    - '\b(code|verification|verify|OTP|passcode|one[- ]time)\b.{0,40}\b\d{4,8}\b'
+    - '\bdo not share\b'
