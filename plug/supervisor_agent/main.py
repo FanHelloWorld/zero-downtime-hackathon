@@ -13,6 +13,7 @@ Environment:
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -140,6 +141,41 @@ def metrics() -> str:
             continue
         lines += [f"# TYPE plug_pool_{key} gauge", f"plug_pool_{key} {value}"]
     return "\n".join(lines) + "\n"
+
+
+@app.get("/plan")
+def plan(chat: str | None = None, limit: int = 5) -> dict[str, Any]:
+    """What the agent is thinking about a group chat, without having spoken.
+
+    Chats are keyed by the same hash the event log uses, so this can be read
+    alongside `plug tail -f` without exposing chat identifiers. Pass no `chat`
+    to list every conversation being followed.
+    """
+    with Memory() as memory:
+        guids = memory.chats_with_plans()
+
+        if chat is None:
+            return {
+                "following": [
+                    {
+                        "chat": events.anon(guid),
+                        "latest": json.loads(memory.latest_plan(guid) or "null"),
+                    }
+                    for guid in guids
+                ]
+            }
+
+        target = next((g for g in guids if events.anon(g) == chat or g == chat), None)
+        if target is None:
+            raise HTTPException(404, f"no plans recorded for {chat}")
+
+        return {
+            "chat": events.anon(target),
+            "plans": [
+                {"ts": ts, "plan": json.loads(payload)}
+                for ts, payload in memory.recent_plans(target, limit)
+            ],
+        }
 
 
 @app.post("/notify")

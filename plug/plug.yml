@@ -38,6 +38,16 @@ chats:
   # Leave empty to reply to everyone.
   only_handles: []
 
+# Group-chat behaviour. The agent reads every burst and speaks only when
+# someone says its name — silence is the default, not the exception.
+group:
+  agent_name: plug          # matched on word boundaries: "plug" hits, "plugin" doesn't
+  aliases: []
+  respond_when_tagged_only: true
+  plan_every_burst: true    # one model call per burst, even when staying quiet
+  answer_direct_questions: false
+  plan_max_tokens: 700
+
 safety:
   per_chat_per_hour: 6
   global_per_hour: 30
