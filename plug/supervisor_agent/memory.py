@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS sends (
 );
 CREATE INDEX IF NOT EXISTS sends_chat_ts_idx ON sends (chat_guid, ts);
 CREATE INDEX IF NOT EXISTS sends_ts_idx ON sends (ts);
+
+CREATE TABLE IF NOT EXISTS plans (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_guid TEXT NOT NULL,
+    ts        REAL NOT NULL,
+    payload   TEXT NOT NULL          -- the plan, as JSON
+);
+CREATE INDEX IF NOT EXISTS plans_chat_idx ON plans (chat_guid, id);
 """
 
 
@@ -69,6 +77,37 @@ class Memory:
             (chat_guid, turns),
         ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+    # ---- behind-the-scenes plans -----------------------------------------
+
+    def save_plan(self, chat_guid: str, payload: str) -> None:
+        """Append a plan. Kept append-only so /plan can show the read evolving."""
+        self._conn.execute(
+            "INSERT INTO plans (chat_guid, ts, payload) VALUES (?, ?, ?)",
+            (chat_guid, time.time(), payload),
+        )
+        self._conn.commit()
+
+    def latest_plan(self, chat_guid: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT payload FROM plans WHERE chat_guid = ? ORDER BY id DESC LIMIT 1",
+            (chat_guid,),
+        ).fetchone()
+        return row["payload"] if row else None
+
+    def recent_plans(self, chat_guid: str, limit: int = 10) -> list[tuple[float, str]]:
+        rows = self._conn.execute(
+            "SELECT ts, payload FROM plans WHERE chat_guid = ? ORDER BY id DESC LIMIT ?",
+            (chat_guid, limit),
+        ).fetchall()
+        return [(float(r["ts"]), r["payload"]) for r in rows]
+
+    def chats_with_plans(self, limit: int = 50) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT chat_guid, MAX(id) AS m FROM plans GROUP BY chat_guid ORDER BY m DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r["chat_guid"] for r in rows]
 
     # ---- send log and rate counters --------------------------------------
 

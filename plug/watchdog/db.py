@@ -33,7 +33,13 @@ SELECT m.ROWID          AS rowid,
        c.chat_identifier AS chat_identifier,
        c.service_name   AS service_name,
        c.style          AS style,
-       c.display_name   AS display_name
+       c.display_name   AS display_name,
+       -- Full roster, including members who have never sent a message. The
+       -- supervisor cannot open chat.db, so this rides along with the message.
+       (SELECT group_concat(h2.id, char(31))
+          FROM chat_handle_join chj
+          JOIN handle h2 ON h2.ROWID = chj.handle_id
+         WHERE chj.chat_id = c.ROWID) AS participants
 FROM message m
 JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
 JOIN chat c               ON c.ROWID = cmj.chat_id
@@ -45,6 +51,17 @@ WHERE m.ROWID > :cursor
 ORDER BY m.ROWID ASC
 LIMIT :limit
 """
+
+
+# Unit separator: handles are phone numbers and emails, neither of which can
+# contain it, so a comma or semicolon delimiter would be riskier for no gain.
+_ROSTER_SEP = chr(31)
+
+
+def _split_participants(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    return tuple(part for part in raw.split(_ROSTER_SEP) if part)
 
 
 class ChatDB:
@@ -109,6 +126,7 @@ class ChatDB:
                     service=row["service_name"] or "unknown",
                     style=int(row["style"] or 0),
                     display_name=row["display_name"] or None,
+                    participants=_split_participants(row["participants"]),
                 )
             )
         return out

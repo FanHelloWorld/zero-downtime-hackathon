@@ -65,6 +65,29 @@ class SupervisorConfig(BaseModel):
     """Attempts before an item is dead-lettered instead of retried forever."""
 
 
+class GroupConfig(BaseModel):
+    """Group-chat behaviour: when the agent speaks, and how it prepares."""
+
+    agent_name: str = "plug"
+    """What people call it in the chat. Matched on word boundaries, so this
+    should be a word they'd actually type."""
+    aliases: list[str] = Field(default_factory=list)
+
+    respond_when_tagged_only: bool = True
+    """Silence unless addressed. Turning this off puts an LLM into a friend
+    group's conversation uninvited — it is on for a reason."""
+
+    plan_every_burst: bool = True
+    """Read the room on every burst, not just when addressed. Costs one model
+    call per burst; buys a reply that reflects the conversation it landed in."""
+
+    answer_direct_questions: bool = False
+    """Treat "what do you think?" as a tag when we spoke recently. Off by
+    default: it is a guess, and guessing wrong means interrupting."""
+
+    plan_max_tokens: int = 700
+
+
 class ChatFilter(BaseModel):
     include_groups: bool = True
     include_1to1: bool = True
@@ -100,6 +123,7 @@ class Config(BaseModel):
     history_turns: int = 12
 
     chats: ChatFilter = Field(default_factory=ChatFilter)
+    group: GroupConfig = Field(default_factory=GroupConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
     source: str = "defaults"

@@ -7,6 +7,7 @@ can only ever address the chat the batch came from.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import anthropic
@@ -17,8 +18,12 @@ from plug import events
 from . import send
 from plug.config import Config
 from .memory import Memory
+from plug.mention import MentionDetector, Tag
 from plug.models import Batch
 from plug.safety import ReplyPolicy
+
+from . import personality
+from .planner import Plan, Planner
 
 # Retrying these cannot succeed: the request, the credentials, or the account
 # is the problem, not a transient blip. Rate limits and 5xx are absent on
@@ -52,6 +57,14 @@ class AgentOutcome:
     sent: bool = False
     skipped: bool = False
     blocked: bool = False
+    planned: bool = False
+    """Read the room and deliberately stayed quiet — nobody addressed us.
+
+    The normal outcome in a group chat, and not a failure: the plan is stored
+    and the pool item is settled.
+    """
+    plan: "Plan | None" = None
+    pillar: str = ""
     text: str = ""
     reason: str = ""
     strategy: str = ""
@@ -71,26 +84,84 @@ class Agent:
         self.safety = safety
         self.dry_run = dry_run
         self.client = anthropic.Anthropic()
+        self.planner = Planner(config, self.client)
+        self.mention = MentionDetector(
+            config.group.agent_name,
+            config.group.aliases,
+            answer_direct_questions=config.group.answer_direct_questions,
+        )
 
-    def _system_prompt(self, batch: Batch) -> str:
+    def _system_prompt(self, batch: Batch, plan: Plan | None, tag: Tag) -> str:
         last = batch.last
-        kind = (
-            f"a group chat named {last.chat_label!r}"
-            if batch.is_group
-            else f"a one-to-one conversation with {last.handle or 'an unknown number'}"
-        )
-        return (
-            f"{self.config.persona}\n\n"
-            f"You are replying in {kind} over {last.service}.\n"
-            + ("Multiple people can speak here; each incoming line is prefixed with its sender.\n" if batch.is_group else "")
-            + "\n"
-            + SYSTEM_RULES
-        )
+        parts = [self.config.persona]
+
+        if batch.is_group:
+            pillar = personality.get(plan.pillar if plan else None)
+            parts += [
+                f"You are in a group chat named {last.chat_label!r} over {last.service}, "
+                f"with {', '.join(batch.roster) or 'a few people'}.",
+                "Several people talk here; each incoming line is prefixed with its sender.",
+                f"{tag.by or 'Someone'} just brought you in — {tag.reason}. "
+                "Answer them, in the flow of what the group is already talking about. "
+                "Don't greet the chat or reintroduce yourself; you have been here the whole time.",
+                "",
+                personality.SHARED_GROUND,
+                "",
+                pillar.prompt(),
+            ]
+            if plan:
+                parts += ["", "You have been following along:", plan.brief()]
+        else:
+            parts.append(
+                f"You are replying in a one-to-one conversation with "
+                f"{last.handle or 'an unknown number'} over {last.service}."
+            )
+
+        return "\n".join([*parts, "", SYSTEM_RULES])
+
+    def _we_spoke_recently(self, chat_guid: str, window: float = 300.0) -> bool:
+        last = self.memory.last_send_ts(chat_guid)
+        return last is not None and (time.time() - last) < window
 
     def handle(self, batch: Batch) -> AgentOutcome:
         outcome = AgentOutcome()
         chat_guid = batch.chat_guid
         incoming = batch.transcript()
+        group = self.config.group
+
+        # Phase 1 — read the room. Runs whether or not we end up speaking, so
+        # the eventual reply reflects a conversation we actually followed.
+        plan: Plan | None = None
+        if batch.is_group and group.plan_every_burst:
+            previous = Plan.from_json(self.memory.latest_plan(chat_guid))
+            plan = self.planner.plan(batch, previous)
+            if plan is not None:
+                self.memory.save_plan(chat_guid, plan.to_json())
+                outcome.plan = plan
+                outcome.pillar = plan.pillar
+
+        # Phase 2 — were we actually invited? The detector decides this, not the
+        # model: `plan.addressed_to_us` is the model's own read of a message it
+        # is also being asked to act on, which is not a check at all.
+        if batch.is_group and group.respond_when_tagged_only:
+            tag = self.mention.find(
+                batch, we_spoke_recently=self._we_spoke_recently(chat_guid)
+            )
+            if not tag:
+                outcome.planned = True
+                outcome.reason = "planned, not addressed"
+                # Still record what was said: continuity matters more when we
+                # were quiet than when we spoke.
+                self.memory.append_history(chat_guid, "user", incoming)
+                events.emit(
+                    "agent", "planned", chat=chat_guid,
+                    pillar=outcome.pillar or None,
+                    tone=plan.tone if plan else None,
+                    model_thought_addressed=plan.addressed_to_us if plan else None,
+                )
+                return outcome
+        else:
+            tag = Tag(True, "direct conversation")
 
         @beta_tool
         def send_reply(text: str) -> str:
@@ -99,7 +170,15 @@ class Agent:
             Args:
                 text: The reply, written the way a person texts — short and natural.
             """
-            verdict = self.safety.can_send(chat_guid, text)
+            # Belt and braces. The prompt already says to answer only when
+            # addressed; this is the part that holds if the prompt doesn't.
+            if not tag:
+                outcome.blocked = True
+                outcome.reason = "not addressed in group chat"
+                events.emit("safety", "send_blocked", chat=chat_guid, reason=outcome.reason)
+                return "blocked: nobody addressed you. Stay quiet; stop here."
+
+            verdict = self.safety.can_send(chat_guid, text, is_group=batch.is_group)
             if not verdict:
                 outcome.blocked = True
                 outcome.reason = verdict.reason
@@ -152,13 +231,16 @@ class Agent:
         history = self.memory.recent_history(chat_guid, self.config.history_turns)
         messages = [*history, {"role": "user", "content": incoming}]
 
-        events.emit("agent", "start", chat=chat_guid, batch=len(batch.messages), group=batch.is_group)
+        events.emit(
+            "agent", "start", chat=chat_guid, batch=len(batch.messages),
+            group=batch.is_group, pillar=outcome.pillar or None, tagged_by=tag.by,
+        )
 
         try:
             runner = self.client.beta.messages.tool_runner(
                 model=self.config.model,
                 max_tokens=self.config.max_tokens,
-                system=self._system_prompt(batch),
+                system=self._system_prompt(batch, plan, tag),
                 tools=[send_reply, skip],
                 messages=messages,
             )
