@@ -1,0 +1,583 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sediment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --paper:#E8EAE3; --paper-2:#F2F3EE; --paper-3:#DDE0D6;
+  --ink:#161C18; --ink-soft:#5C6660; --rule:#C8CCC0;
+  --pine:#2F5D50; --ember:#B4671F;
+
+  --night:#0E1420; --night-2:#161E2C; --night-3:#1D2739;
+  --haze:#26324A; --dust:#7E8CA4; --chalk:#DCE3EE;
+  --lamp:#DE9A3E; --moss:#63B695;
+
+  --display:"Bricolage Grotesque",sans-serif;
+  --body:"IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--body);background:var(--paper);color:var(--ink);
+  -webkit-font-smoothing:antialiased;transition:background .5s ease,color .5s ease}
+body.is-back{background:var(--night);color:var(--chalk)}
+
+/* top bar */
+.top{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:22px;padding:14px 26px;
+  border-bottom:1px solid var(--rule);background:color-mix(in srgb,var(--paper) 88%,transparent);
+  backdrop-filter:blur(10px);transition:background .5s ease,border-color .5s ease}
+body.is-back .top{background:color-mix(in srgb,var(--night) 88%,transparent);border-bottom-color:var(--haze)}
+.mark{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:-.03em;display:flex;align-items:center;gap:9px}
+.mark .dot{width:9px;height:9px;border-radius:50%;background:var(--pine);flex:none}
+body.is-back .mark .dot{background:var(--lamp)}
+.mark small{font-family:var(--mono);font-weight:400;font-size:10px;letter-spacing:.14em;text-transform:uppercase;opacity:.45;margin-left:3px}
+.tabs{display:flex;gap:4px;margin-left:auto}
+.tab{font-family:var(--body);font-size:13px;font-weight:500;padding:7px 14px;border-radius:999px;
+  border:1px solid transparent;background:none;color:var(--ink-soft);cursor:pointer;transition:.18s}
+.tab:hover{color:var(--ink)}
+body.is-back .tab{color:var(--dust)} body.is-back .tab:hover{color:var(--chalk)}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+body.is-back .tab[aria-selected="true"]{background:var(--chalk);color:var(--night);border-color:var(--chalk)}
+.tab:focus-visible,.btn:focus-visible,.filt:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
+.cue{width:22px;height:22px;border-radius:50%;border:1px solid var(--rule);background:none;cursor:pointer;
+  color:var(--ink-soft);font-family:var(--mono);font-size:10px;line-height:1;transition:.15s;flex:none}
+.cue:hover{border-color:var(--ink);color:var(--ink)}
+body.is-back .cue{border-color:var(--haze);color:var(--dust)}
+.page{display:none} .page.on{display:block}
+
+/* quiet meter */
+.quiet{padding:30px 26px 22px;border-bottom:1px solid var(--rule)}
+.quiet-head{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:18px}
+.quiet-head h1{font-family:var(--display);font-weight:800;font-size:clamp(26px,4.2vw,40px);
+  letter-spacing:-.035em;line-height:1;margin:0}
+.quiet-head .sub{font-size:13px;color:var(--ink-soft);line-height:1.55;max-width:38ch}
+.meter{position:relative;height:100px}
+.meter .baseline{position:absolute;left:0;right:0;top:62px;height:1px;background:var(--rule)}
+.field{position:absolute;left:0;right:118px;top:0;bottom:0}
+.bars{position:absolute;inset:0 0 auto 0;height:62px;display:flex;align-items:flex-end;gap:2px}
+.bars i{flex:1;background:var(--paper-3);border-radius:1px 1px 0 0;display:block}
+.marks{position:absolute;left:0;right:0;top:63px;height:34px}
+.marks span{position:absolute;top:6px;width:7px;height:7px;border-radius:50%;background:var(--pine);transform:translateX(-50%)}
+.marks span.spoke{background:var(--ember);width:9px;height:9px;top:5px;
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--ember) 18%,transparent)}
+.marks span.fresh{animation:land .6s cubic-bezier(.2,.9,.3,1)}
+@keyframes land{from{transform:translateX(-50%) scale(0);opacity:0}to{transform:translateX(-50%) scale(1);opacity:1}}
+.now{position:absolute;right:0;top:0;bottom:0;width:112px;border-left:1px dashed var(--rule)}
+.now b{position:absolute;left:10px;top:2px;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-soft);font-weight:400}
+.now .marks{left:10px;right:6px}
+.meter-legend{display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.06em;color:var(--ink-soft);text-transform:uppercase}
+.meter-legend b{color:var(--ink);font-weight:500}
+.key{display:inline-flex;align-items:center;gap:6px}
+.key::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.key.k-quiet::before{background:var(--pine)}
+.key.k-spoke::before{background:var(--ember)}
+
+/* layout */
+.shell{display:grid;grid-template-columns:196px 1fr;align-items:start}
+.rail{position:sticky;top:60px;padding:26px 18px 40px;border-right:1px solid var(--rule);min-height:70vh}
+.rail h3{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-soft);margin:0 0 12px;font-weight:500}
+.filt{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;
+  background:none;border:0;cursor:pointer;font-family:var(--body);font-size:13.5px;color:var(--ink-soft);
+  padding:7px 9px;border-radius:7px;transition:.15s}
+.filt:hover{background:var(--paper-3);color:var(--ink)}
+.filt[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.filt[aria-pressed="true"] em{color:var(--paper);opacity:.6}
+.filt em{font-family:var(--mono);font-style:normal;font-size:10.5px;opacity:.55}
+.rail-note{margin-top:24px;padding-top:18px;border-top:1px solid var(--rule);font-size:11.5px;line-height:1.65;color:var(--ink-soft)}
+.stream{padding:26px 26px 90px;display:flex;flex-direction:column;gap:14px;max-width:840px}
+
+/* cards */
+.card{background:var(--paper-2);border:1px solid var(--rule);border-radius:12px;padding:18px 20px;transition:border-color .2s}
+.card:hover{border-color:#B3B9AA}
+.card.retired{opacity:.5}
+.card.proposal{background:transparent;border-style:dashed;border-color:var(--ember)}
+.card.arriving{animation:arrive .55s cubic-bezier(.2,.85,.3,1)}
+@keyframes arrive{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:none}}
+.card.settling{background:#E4EDE6;border-color:#A9C4B2;transition:background 2s ease 1s,border-color 2s ease 1s}
+.c-top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.c-name{font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:-.02em}
+.c-agent{font-family:var(--mono);font-size:11px;color:var(--pine);
+  background:color-mix(in srgb,var(--pine) 10%,transparent);padding:2px 7px;border-radius:5px}
+.card.retired .c-agent{color:var(--ink-soft);background:var(--paper-3)}
+.c-state{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-soft);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.c-state::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--pine);flex:none}
+.c-state.warm::before{background:var(--ember)}
+.c-state.off::before{background:var(--rule)}
+.prov{margin:11px 0 0;font-size:12.5px;color:var(--ink-soft);line-height:1.7}
+.prov q{quotes:none;background:var(--paper-3);padding:1px 6px;border-radius:4px;color:var(--ink)}
+.payload{margin:14px 0 0;border-top:1px solid var(--rule);padding-top:13px;display:grid;gap:7px}
+.row{display:flex;gap:14px;font-size:13.5px;line-height:1.5}
+.row dt{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);min-width:86px;flex:none;
+  padding-top:3px;letter-spacing:.05em;text-transform:uppercase}
+.row dd{margin:0}
+.row b{font-weight:600}
+.wake{margin-top:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;
+  color:var(--ink-soft);border-top:1px dashed var(--rule);padding-top:12px}
+.wake .cond{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+.acts{margin-left:auto;display:flex;gap:7px}
+.btn{font-family:var(--body);font-size:12.5px;font-weight:500;padding:6px 13px;border-radius:7px;
+  border:1px solid var(--rule);background:var(--paper);color:var(--ink);cursor:pointer;transition:.15s}
+.btn:hover{background:var(--paper-3)}
+.btn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.btn.warm{background:var(--ember);border-color:var(--ember);color:#fff}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.chip{font-size:12px;background:var(--paper-3);border-radius:999px;padding:4px 11px}
+.chip b{font-weight:600}
+.divider{display:flex;align-items:center;gap:12px;margin:16px 0 2px}
+.divider span{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft)}
+.divider::after{content:"";flex:1;height:1px;background:var(--rule)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(140%);background:var(--ink);
+  color:var(--paper);font-size:13px;padding:11px 18px;border-radius:9px;z-index:80;
+  transition:transform .3s cubic-bezier(.2,.8,.3,1);box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.toast.up{transform:translateX(-50%) translateY(0)}
+
+/* workflow */
+.wf{display:grid;grid-template-columns:242px 1fr;min-height:calc(100vh - 56px)}
+.wf-side{border-right:1px solid var(--haze);padding:22px 16px}
+.wf-side h3{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dust);margin:0 0 13px;font-weight:500}
+.ag{padding:10px 11px;border-radius:8px;margin-bottom:5px;border:1px solid transparent}
+.ag-n{font-family:var(--mono);font-size:12.5px;display:flex;align-items:center;gap:7px}
+.ag-n::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--dust);flex:none}
+.ag.running .ag-n::before{background:var(--lamp);box-shadow:0 0 0 3px color-mix(in srgb,var(--lamp) 22%,transparent)}
+.ag.always .ag-n::before{background:var(--moss)}
+.ag.retired{opacity:.42}
+.ag-m{font-size:11px;color:var(--dust);margin-top:4px;line-height:1.5}
+.wf-main{padding:22px 24px 40px;overflow:hidden}
+.wf-head{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.wf-head h2{font-family:var(--display);font-weight:800;font-size:24px;letter-spacing:-.03em;margin:0}
+.wf-head p{margin:0;font-size:12.5px;color:var(--dust);max-width:46ch;line-height:1.6}
+.pill{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  border:1px solid var(--haze);border-radius:999px;padding:4px 10px;color:var(--dust)}
+.canvas-wrap{border:1px solid var(--haze);border-radius:14px;background:var(--night-2);
+  background-image:radial-gradient(circle,var(--haze) 1px,transparent 1px);background-size:22px 22px;overflow-x:auto}
+.canvas{position:relative;width:1300px}
+.canvas svg{position:absolute;inset:0;width:100%;height:100%}
+.edge{fill:none;stroke:var(--haze);stroke-width:1.6}
+.edge.live{stroke:var(--lamp);stroke-dasharray:5 6;animation:flow 1.1s linear infinite}
+.edge.always{stroke:var(--moss);stroke-dasharray:5 6;animation:flow 2.4s linear infinite}
+.edge.retired{stroke-dasharray:2 5;opacity:.5}
+@keyframes flow{to{stroke-dashoffset:-22}}
+.node{position:absolute;background:var(--night-3);border:1px solid var(--haze);border-radius:11px;padding:12px 13px}
+.node.running{border-color:var(--lamp);box-shadow:0 0 0 4px color-mix(in srgb,var(--lamp) 11%,transparent)}
+.node.always{border-color:color-mix(in srgb,var(--moss) 55%,var(--haze))}
+.node.retired{opacity:.4}
+.node.pending{border-style:dashed;border-color:var(--lamp);background:transparent}
+.node.arriving{animation:arrive .55s cubic-bezier(.2,.85,.3,1)}
+.n-kind{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dust)}
+.n-name{font-family:var(--body);font-weight:600;font-size:14px;margin-top:4px;display:flex;align-items:center;gap:7px}
+.n-name .led{width:6px;height:6px;border-radius:50%;background:var(--dust);flex:none}
+.node.running .led{background:var(--lamp);animation:pulse 1.6s ease-in-out infinite}
+.node.always .led{background:var(--moss)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.tools{display:flex;flex-wrap:wrap;gap:4px;margin-top:9px}
+.tool{font-family:var(--mono);font-size:9.5px;border:1px solid var(--haze);border-radius:5px;padding:2px 6px;color:var(--dust)}
+.node.running .tool{border-color:color-mix(in srgb,var(--lamp) 40%,var(--haze));color:var(--lamp)}
+.fanout{position:absolute;left:706px;top:12px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--lamp);background:var(--night);padding:3px 8px;
+  border:1px solid var(--haze);border-radius:5px}
+.log{margin-top:16px;border:1px solid var(--haze);border-radius:12px;background:var(--night-2);padding:14px 16px}
+.log h3{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dust);margin:0 0 10px;font-weight:500}
+.log ol{list-style:none;margin:0;padding:0;font-family:var(--mono);font-size:11.5px;line-height:1.9}
+.log li{display:flex;gap:12px;color:var(--dust)}
+.log li.fresh{animation:arrive .5s ease}
+.log time{color:var(--haze);flex:none;width:46px}
+.log b{color:var(--chalk);font-weight:400}
+.log .lamp{color:var(--lamp)} .log .moss{color:var(--moss)}
+
+@media (max-width:900px){
+  .shell,.wf{grid-template-columns:1fr}
+  .rail{position:static;border-right:0;border-bottom:1px solid var(--rule);min-height:0;
+    display:flex;gap:6px;overflow-x:auto;padding:14px 18px}
+  .rail h3,.rail-note{display:none}
+  .filt{width:auto;flex:none}
+  .wf-side{border-right:0;border-bottom:1px solid var(--haze)}
+  .stream,.wf-main{padding-left:18px;padding-right:18px}
+  .quiet{padding:22px 18px 18px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top">
+  <div class="mark"><span class="dot"></span>Sediment<small>quiet agents</small></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-go="out">Shared space</button>
+    <button class="tab" role="tab" aria-selected="false" data-go="wf">Backstage</button>
+    <button class="cue" id="cue" title="Demo: land the next finished item (or press N)">N</button>
+  </nav>
+</header>
+
+<main class="page on" id="p-out">
+  <section class="quiet">
+    <div class="quiet-head">
+      <h1 id="gname"></h1>
+      <p class="sub" id="gsub"></p>
+    </div>
+    <div class="meter">
+      <div class="field">
+        <div class="bars" id="bars"></div>
+        <div class="marks" id="marks"></div>
+      </div>
+      <div class="baseline"></div>
+      <div class="now"><b>now</b><div class="marks" id="nowmarks"></div></div>
+    </div>
+    <div class="meter-legend">
+      <span><b id="msgs"></b> messages, last 72 hours</span>
+      <span class="key k-quiet">Finished quietly <b id="done"></b></span>
+      <span class="key k-spoke">Spoke up <b id="spoke"></b></span>
+    </div>
+  </section>
+
+  <div class="shell">
+    <aside class="rail">
+      <h3>Filter</h3>
+      <div id="filters"></div>
+      <p class="rail-note">Anything marked <em>waiting to be asked</em> is already finished. It will not bring itself up.</p>
+    </aside>
+    <section class="stream" id="stream"></section>
+  </div>
+</main>
+
+<main class="page" id="p-wf">
+  <div class="wf">
+    <aside class="wf-side">
+      <h3>Agents</h3><div id="aglist"></div>
+    </aside>
+    <section class="wf-main">
+      <div class="wf-head">
+        <h2>Backstage</h2>
+        <span class="pill" id="wfpill"></span>
+        <p>The listener produces nothing. It looks for gaps. Every agent the builder makes gets a different set of tools — decided at run time, not from a template.</p>
+      </div>
+      <div class="canvas-wrap"><div class="canvas" id="canvas"></div></div>
+      <div class="log">
+        <h3>Background log · today</h3>
+        <ol id="loglist"></ol>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+   STATE — everything on screen is rendered from this object.
+   Replace it with your backend payload and nothing else changes.
+   ══════════════════════════════════════════════════════════ */
+var state = {
+  group:{ name:"Nobody Sleeps on Fridays", members:6,
+          blurb:"Six people. The agents work in the background and never post in the chat. They leave what they finish here, for whenever you want it." },
+  window:{ messages:1204, finished:17, spoke:1 },
+
+  artifacts:[
+    { id:"raid", kind:"proposal", section:"Needs your call", title:"I'd like to build @raidnight",
+      state:"Waiting on you", stateTone:"warm",
+      provenance:"Last night at 11:41pm, three of you said the same thing within two minutes — <q>let's run one this weekend</q>, <q>I'm down</q>, <q>after work</q> — and then the thread moved on.",
+      fields:[
+        ["What it does","Compare all six calendars, watch who's online, and post a time here once three of you overlap."],
+        ["Tools it needs","Calendar · Steam presence"],
+        ["When it stays quiet","Always. It never posts in the chat. If three of you don't line up, it says nothing."],
+        ["When it retires","Two weeks with no mention of the game, and it shuts itself down."]
+      ],
+      note:"Once built, it starts immediately. You won't get a notification.",
+      actions:[["decline","Not this one"],["approve","Build it"]] },
+
+    { id:"dinner", kind:"ready", section:"Finished, waiting to be asked", title:"That Sichuan place", agent:"@dinner",
+      state:"Ready · 4 days",
+      provenance:"Four of you brought it up three separate times since Aug 12. The last word was <q>next time for sure</q>. There was no next time.",
+      fields:[
+        ["Table","Saturday 7:00pm, <b>2 tables left</b>. Sunday is full."],
+        ["Travel","24 min average for the six of you. Worst for Wen at 41 min."],
+        ["Heads up","<b>7 dishes</b> are marked extra hot — Zhe doesn't eat spicy. 12 dishes aren't."]
+      ],
+      wake:"Wakes when someone mentions the place, or asks where to eat",
+      actions:[["drop","Let it go"],["speak","Post it to the chat"]] },
+
+    { id:"trail", kind:"ready", title:"The hike", agent:"@trail", state:"Ready · 6 days",
+      provenance:"Three of you went back and forth for a dozen messages, got stuck on which trail, and then the weekend happened.",
+      fields:[
+        ["Drafts","Two routes, both under 4 hours — you've said anything longer and nobody shows."],
+        ["Weather","Clear this Saturday. Rain the next."]
+      ],
+      wake:"Wakes on \"hike\" or \"what are we doing this weekend\"",
+      actions:[["drop","Let it go"],["speak","Post it to the chat"]] },
+
+    { id:"receipts", kind:"ready", title:"Who spoiled the finale", agent:"@receipts", state:"Ready · 11 days",
+      provenance:"Two of you bickered about this for a while. Nobody scrolled back. The answer is in the chat from Jul 29.",
+      wake:"Wakes only if someone asks who it was. Otherwise it never says a word",
+      actions:[["drop","Let it go"],["speak","Post it to the chat"]] },
+
+    { id:"memory", kind:"memory", section:"Always growing", title:"What this group knows", agent:"@memory",
+      state:"Always on · +3 today",
+      provenance:"Produces nothing on its own. Other agents read it. The line about Zhe and spicy food up there came from here.",
+      chips:[["Zhe","no spicy food"],["Wen","works every Sunday"],["Wei","doesn't drink"],
+             ["Everyone","hates anything over 4 hours"],["Meetups","Saturday nights land best"],
+             ["Recommended","11 restaurants · 6 films"]] },
+
+    { id:"tickets", kind:"retired", section:"Shut themselves down", title:"That show", agent:"@tickets",
+      state:"Retired · Aug 19", stateTone:"off",
+      provenance:"Watched for nine days. Sold out on Aug 19, which met its retirement condition, so it closed itself. Nobody was told." }
+  ],
+
+  agents:[
+    { name:"@dinner",   status:"running", note:"Checked the table 12 min ago · ready, waiting" },
+    { name:"@memory",   status:"always",  note:"Always on · 3 entries written today" },
+    { name:"@trail",    status:"dormant", note:"Dormant · finished 6 days ago" },
+    { name:"@receipts", status:"dormant", note:"Dormant · finished 11 days ago" },
+    { name:"@tickets",  status:"retired", note:"Retired Aug 19 · sold out" },
+    { name:"@raidnight",status:"pending", note:"Spec written · waiting on a human" }
+  ],
+
+  nodes:[
+    { name:"@dinner",   status:"running", kind:"spawned",  desc:"Table, travel, dietary notes. Goes quiet when done.", tools:["Reservations","Maps","Memory"] },
+    { name:"@trail",    status:"dormant", kind:"spawned · dormant", desc:"Two drafts, both under four hours", tools:["Maps","Weather","Calendar"] },
+    { name:"@memory",   status:"always",  kind:"always on · memory", desc:"Produces nothing. Read by the others.", tools:["Write","Recall"] },
+    { name:"@tickets",  status:"retired", kind:"spawned · retired", desc:"Retirement condition met. Closed itself.", tools:["Ticketing","Prices"] }
+  ],
+
+  log:[
+    { t:"11:41p", tone:"", html:"listener found an overlap — <b>3 people / 118 seconds</b> — handed to builder" },
+    { t:"11:43p", tone:"lamp", html:"builder wrote the @raidnight spec: calendar + presence → waiting on a human" },
+    { t:"9:12a",  tone:"", html:"@memory wrote <b>3</b> entries (Zhe: no spicy · everyone: 4-hour ceiling)" },
+    { t:"2:06p",  tone:"", html:"@dinner read @memory, recalculated the dietary note, updated the shared space" },
+    { t:"6:30p",  tone:"moss", html:"@dinner decided \"2 tables left\" wasn't urgent enough to interrupt anyone → <b>stayed quiet</b>" },
+    { t:"6:30p",  tone:"", html:"times an agent spoke up today: <b>0</b>" }
+  ]
+};
+
+/* the item that lands live during the demo */
+var incoming = {
+  artifact:{ id:"films", kind:"ready", title:"Three films you all already wanted to see", agent:"@shortlist",
+    state:"Just finished", stateTone:"",
+    provenance:"You've each recommended something in the last month and nobody wrote any of it down. Two titles overlap across four of you.",
+    fields:[
+      ["Overlap","<b>2 of 3</b> are on services someone in this chat already pays for."],
+      ["Runtime","All under 2 hours — the 4-hour rule, applied."],
+      ["Left out","One title, because Wei said he'd already seen it on Aug 3."]
+    ],
+    wake:"Wakes on \"movie night\" or \"what should we watch\"",
+    actions:[["drop","Let it go"],["speak","Post it to the chat"]] },
+  node:{ name:"@shortlist", status:"running", kind:"spawned · new", desc:"Cross-referenced a month of recommendations", tools:["Catalog","Memory","Streaming"] },
+  agent:{ name:"@shortlist", status:"running", note:"Just finished · nobody notified" },
+  log:{ t:"now", tone:"lamp", html:"@shortlist finished and filed it. <b>No one was interrupted.</b>" }
+};
+
+/* ══════════════════ rendering ══════════════════ */
+var $=function(s){return document.getElementById(s)};
+var esc=function(s){return s};
+
+function renderHeader(){
+  $('gname').textContent=state.group.name;
+  $('gsub').textContent=state.group.blurb;
+  $('msgs').textContent=state.window.messages.toLocaleString();
+  $('done').textContent=state.window.finished;
+  $('spoke').textContent=state.window.spoke;
+  var live=state.nodes.filter(function(n){return n.status==='running'||n.status==='always'}).length;
+  $('wfpill').textContent=live+' live · '+state.window.spoke+' interruption';
+}
+
+function renderMeter(){
+  var bars=$('bars'); bars.innerHTML='';
+  var d=[8,5,3,2,2,4,11,19,14,9,12,22,31,26,18,15,24,38,52,61,48,39,27,14,
+         6,4,2,2,3,7,16,23,17,11,14,26,35,29,21,17,28,44,58,66,51,35,22,11,
+         9,5,3,2,2,5,13,21,16,10,13,24,33,28,20,16,26,41,55,72,57,41,25,13];
+  var mx=Math.max.apply(null,d);
+  d.forEach(function(v){var b=document.createElement('i');b.style.height=Math.max(2,v/mx*62)+'px';bars.appendChild(b)});
+  var m=$('marks'); m.innerHTML='';
+  [4,9,15,22,28,33,39,44,49,55,60,64,68,70,71].forEach(function(i){
+    var s=document.createElement('span'); s.style.left=((i+.5)/d.length*100)+'%'; m.appendChild(s);
+  });
+  var sp=document.createElement('span'); sp.className='spoke'; sp.style.left='88%';
+  sp.title='The one time it spoke: a direct message to Wen — "this closes tonight"';
+  m.appendChild(sp);
+}
+
+var FILTERS=[['all','Everything'],['proposal','Needs your call'],['ready','Waiting to be asked'],
+             ['memory','Group memory'],['retired','Retired']];
+function renderFilters(){
+  var box=$('filters'), cur=box.dataset.cur||'all'; box.innerHTML='';
+  FILTERS.forEach(function(f){
+    var n=f[0]==='all'?state.artifacts.length:state.artifacts.filter(function(a){return a.kind===f[0]}).length;
+    var b=document.createElement('button');
+    b.className='filt'; b.dataset.f=f[0]; b.setAttribute('aria-pressed',String(f[0]===cur));
+    b.innerHTML=f[1]+' <em>'+n+'</em>';
+    b.onclick=function(){box.dataset.cur=f[0];renderFilters();renderStream()};
+    box.appendChild(b);
+  });
+}
+
+function cardHTML(a){
+  var h='<div class="c-top"><span class="c-name">'+a.title+'</span>';
+  if(a.agent) h+='<span class="c-agent">'+a.agent+'</span>';
+  h+='<span class="c-state '+(a.stateTone||'')+'">'+a.state+'</span></div>';
+  if(a.provenance) h+='<p class="prov">'+a.provenance+'</p>';
+  if(a.fields&&a.fields.length){
+    h+='<dl class="payload">';
+    a.fields.forEach(function(f){h+='<div class="row"><dt>'+f[0]+'</dt><dd>'+f[1]+'</dd></div>'});
+    h+='</dl>';
+  }
+  if(a.chips){
+    h+='<div class="chips">';
+    a.chips.forEach(function(c){h+='<span class="chip">'+c[0]+' <b>'+c[1]+'</b></span>'});
+    h+='</div>';
+  }
+  if(a.wake||a.note||a.actions){
+    h+='<div class="wake"><span class="cond">'+(a.wake||a.note||'')+'</span>';
+    if(a.actions){
+      h+='<span class="acts">';
+      a.actions.forEach(function(x,i){
+        var cls=i===a.actions.length-1?(a.kind==='proposal'?'btn warm':'btn primary'):'btn';
+        h+='<button class="'+cls+'" data-act="'+x[0]+'" data-id="'+a.id+'">'+x[1]+'</button>';
+      });
+      h+='</span>';
+    }
+    h+='</div>';
+  }
+  return h;
+}
+
+function renderStream(){
+  var box=$('stream'), cur=$('filters').dataset.cur||'all'; box.innerHTML='';
+  var seen={};
+  state.artifacts.forEach(function(a){
+    if(cur!=='all'&&a.kind!==cur) return;
+    if(cur==='all'&&a.section&&!seen[a.section]){
+      seen[a.section]=1;
+      var d=document.createElement('div'); d.className='divider';
+      d.innerHTML='<span>'+a.section+'</span>'; box.appendChild(d);
+    }
+    var c=document.createElement('article');
+    c.className='card '+(a.kind==='proposal'?'proposal ':'')+(a.kind==='retired'?'retired ':'')+(a._new?'arriving settling':'');
+    c.dataset.id=a.id; c.innerHTML=cardHTML(a); box.appendChild(c);
+    if(a._new){ delete a._new; setTimeout(function(){c.classList.remove('settling')},60); }
+  });
+}
+
+function renderAgents(){
+  var box=$('aglist'); box.innerHTML='';
+  state.agents.forEach(function(g){
+    var d=document.createElement('div'); d.className='ag '+g.status;
+    d.innerHTML='<div class="ag-n">'+g.name+'</div><div class="ag-m">'+g.note+'</div>';
+    box.appendChild(d);
+  });
+}
+
+function renderCanvas(fresh){
+  var box=$('canvas'), N=state.nodes.length, GAP=152, CY=330;
+  var H=Math.max(660,N*GAP+90); box.style.height=H+'px';
+  var cy=function(i){return (H/2)+(i-(N-1)/2)*GAP};
+  var paths='', html='';
+  paths+='<path class="edge live" d="M196,'+(H/2)+' C226,'+(H/2)+' 226,'+(H/2-12)+' 256,'+(H/2-12)+'"/>';
+  paths+='<path class="edge live" d="M446,'+(H/2-12)+' C486,'+(H/2-12)+' 486,'+(H/2-12)+' 516,'+(H/2-12)+'"/>';
+  state.nodes.forEach(function(n,i){
+    var k=n.status==='running'?'live':n.status==='always'?'always':n.status==='retired'?'retired':'';
+    paths+='<path class="edge '+k+'" d="M700,'+(H/2-12)+' C724,'+(H/2-12)+' 716,'+cy(i)+' 740,'+cy(i)+'"/>';
+    paths+='<path class="edge '+k+'" d="M980,'+cy(i)+' C1016,'+cy(i)+' 1024,'+(H/2-24)+' 1060,'+(H/2-24)+'"/>';
+    html+='<div class="node '+n.status+(fresh&&n.name===fresh?' arriving':'')+'" style="left:740px;top:'+(cy(i)-52)+'px;width:240px">'
+      +'<div class="n-kind">'+n.kind+'</div>'
+      +'<div class="n-name"><span class="led"></span>'+n.name+'</div>'
+      +'<div class="n-desc">'+n.desc+'</div><div class="tools">'
+      +n.tools.map(function(t){return '<span class="tool">'+t+'</span>'}).join('')+'</div></div>';
+  });
+  box.innerHTML='<svg viewBox="0 0 1300 '+H+'" preserveAspectRatio="none">'+paths+'</svg>'
+    +'<div class="node" style="left:46px;top:'+(H/2-32)+'px;width:150px"><div class="n-kind">trigger</div>'
+    +'<div class="n-name"><span class="led"></span>Chat stream</div><div class="n-desc">Messages. Nothing stored.</div></div>'
+    +'<div class="node running" style="left:256px;top:'+(H/2-56)+'px;width:190px"><div class="n-kind">agent · always on</div>'
+    +'<div class="n-name"><span class="led"></span>Listener</div>'
+    +'<div class="n-desc">Finds overlap: two or more people want the same thing, then it goes cold</div>'
+    +'<div class="tools"><span class="tool">Chat window</span><span class="tool">Memory</span></div></div>'
+    +'<div class="node running" style="left:516px;top:'+(H/2-62)+'px;width:184px"><div class="n-kind">builder</div>'
+    +'<div class="n-name"><span class="led"></span>Builds agents</div>'
+    +'<div class="n-desc">Writes the spec: job · tools · wake · silence · retirement</div>'
+    +'<div class="tools"><span class="tool">8 approved tools</span></div></div>'
+    +'<div class="node" style="left:1060px;top:'+(H/2-76)+'px;width:196px"><div class="n-kind">output</div>'
+    +'<div class="n-name"><span class="led"></span>Shared space</div>'
+    +'<div class="n-desc">The only way out. Nothing routes back to the chat.</div></div>'
+    +'<div class="fanout">expands at run time · N varies</div>'+html;
+}
+
+function renderLog(fresh){
+  var box=$('loglist'); box.innerHTML='';
+  state.log.forEach(function(l,i){
+    var li=document.createElement('li');
+    if(fresh&&i===0) li.className='fresh';
+    li.innerHTML='<time>'+l.t+'</time><span class="'+l.tone+'">'+l.html+'</span>';
+    box.appendChild(li);
+  });
+}
+
+function renderAll(){renderHeader();renderFilters();renderStream();renderAgents();renderCanvas();renderLog()}
+
+/* ══════════════════ live arrival (option B) ══════════════════ */
+var landed=false;
+function land(){
+  if(landed) return; landed=true;
+
+  incoming.artifact._new=true;
+  incoming.artifact.section=state.artifacts[0].section;
+  state.artifacts.unshift(incoming.artifact);
+  state.nodes.push(incoming.node);
+  state.agents.unshift(incoming.agent);
+  state.log.unshift(incoming.log);
+  state.window.finished+=1;
+
+  renderHeader(); renderFilters(); renderStream(); renderAgents();
+  renderCanvas(incoming.node.name); renderLog(true);
+
+  var s=document.createElement('span'); s.className='fresh'; s.style.left='34%';
+  s.title='@shortlist filed this without telling anyone';
+  $('nowmarks').appendChild(s);
+}
+
+/* ══════════════════ wiring ══════════════════ */
+renderAll();
+
+var tabs=[].slice.call(document.querySelectorAll('.tab'));
+tabs.forEach(function(t){t.onclick=function(){
+  tabs.forEach(function(x){x.setAttribute('aria-selected',String(x===t))});
+  var go=t.dataset.go;
+  $('p-out').classList.toggle('on',go==='out');
+  $('p-wf').classList.toggle('on',go==='wf');
+  document.body.classList.toggle('is-back',go==='wf');
+  window.scrollTo(0,0);
+}});
+
+var toast=$('toast'),tid;
+function say(m){toast.textContent=m;toast.classList.add('up');clearTimeout(tid);
+  tid=setTimeout(function(){toast.classList.remove('up')},2800)}
+
+document.addEventListener('click',function(e){
+  var b=e.target.closest('[data-act]'); if(!b) return;
+  var a=state.artifacts.filter(function(x){return x.id===b.dataset.id})[0]; if(!a) return;
+  var act=b.dataset.act;
+  if(act==='approve'){
+    say('@raidnight is running. Nothing will appear in the chat.');
+    a.kind='ready'; a.state='Running · just built'; a.stateTone=''; a.actions=null;
+    a.wake='Posts here once three of you overlap. Never in the chat.';
+    state.agents.unshift({name:'@raidnight',status:'running',note:'Just built · comparing calendars'});
+    state.nodes.push({name:'@raidnight',status:'running',kind:'spawned · new',
+      desc:'Waits for three calendars to overlap',tools:['Calendar','Presence']});
+    state.log.unshift({t:'now',tone:'lamp',html:'a human approved @raidnight → running'});
+    renderAgents(); renderCanvas('@raidnight'); renderLog(true);
+  }
+  else if(act==='decline'){ say('Not built. The thread stays in memory and clears in two weeks.'); a.kind='retired'; a.state='Closed'; a.stateTone='off'; a.actions=null; }
+  else if(act==='speak'){ state.window.spoke+=1; say('Posted. That is the first time today.');
+    a.state='Posted to the chat'; a.actions=null; renderHeader(); }
+  else if(act==='drop'){ say('Let go. It stops waiting and closes itself tomorrow.');
+    a.kind='retired'; a.state='Closed'; a.stateTone='off'; a.actions=null; }
+  renderFilters(); renderStream();
+});
+
+$('cue').onclick=land;
+document.addEventListener('keydown',function(e){
+  if(e.key==='n'||e.key==='N'){ if(!/input|textarea/i.test(e.target.tagName)) land(); }
+});
+</script>
