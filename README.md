@@ -102,4 +102,3 @@ Bright Data is an optional enrichment source, not a replacement for the message 
 ## Safety boundary
 
 This is hackathon-grade software. The HTTP endpoints are unauthenticated by default, the queue is local SQLite, and live mode can send real messages. Keep services bound to localhost, start with dry-run, restrict `chats.only_handles`, and use the supervisor pause endpoint before testing changes.
->>>>>>> 9b44df5 (Update README and add docs)
