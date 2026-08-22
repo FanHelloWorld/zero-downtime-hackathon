@@ -21,6 +21,7 @@ log stays auditable. ``purge`` handles housekeeping.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS spool (
     service         TEXT    NOT NULL DEFAULT 'unknown',
     style           INTEGER NOT NULL DEFAULT 0,
     display_name    TEXT,
+    participants    TEXT,                      -- JSON array of handles in the chat
     sent_at         TEXT    NOT NULL,
     enqueued_at     REAL    NOT NULL,
     state           TEXT    NOT NULL DEFAULT 'pending',
@@ -90,6 +92,16 @@ class SpoolStats:
         return self.pending + self.leased
 
 
+def _load_participants(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    try:
+        return tuple(json.loads(raw))
+    except (ValueError, TypeError):
+        # A malformed roster should cost context, not the whole message.
+        return ()
+
+
 def _row_to_item(row: sqlite3.Row) -> SpoolItem:
     return SpoolItem(
         id=int(row["id"]),
@@ -105,6 +117,7 @@ def _row_to_item(row: sqlite3.Row) -> SpoolItem:
             service=row["service"] or "unknown",
             style=int(row["style"] or 0),
             display_name=row["display_name"],
+            participants=_load_participants(row["participants"]),
         ),
     )
 
@@ -119,7 +132,19 @@ class Spool:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that postdate the original schema.
+
+        A bare ALTER in SCHEMA would fail on every start after the first, so
+        check what is actually there. Kept trivial on purpose — a pool file is
+        cheap to delete and rebuild if this ever grows teeth.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(spool)")}
+        if "participants" not in existing:
+            self._conn.execute("ALTER TABLE spool ADD COLUMN participants TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -144,7 +169,9 @@ class Spool:
         rows = [
             (
                 m.rowid, m.guid, m.chat_guid, m.chat_identifier, m.handle, m.body,
-                m.service, m.style, m.display_name, m.sent_at.isoformat(), now,
+                m.service, m.style, m.display_name,
+                json.dumps(list(m.participants)) if m.participants else None,
+                m.sent_at.isoformat(), now,
             )
             for m in messages
         ]
@@ -152,8 +179,8 @@ class Spool:
             """
             INSERT OR IGNORE INTO spool (
                 src_rowid, guid, chat_guid, chat_identifier, handle, body,
-                service, style, display_name, sent_at, enqueued_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                service, style, display_name, participants, sent_at, enqueued_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

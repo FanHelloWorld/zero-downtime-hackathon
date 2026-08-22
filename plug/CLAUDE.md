@@ -46,11 +46,25 @@ Each of these cost real debugging time once already.
 - **The cold-start guard** seeds the watchdog cursor at the newest ROWID. Without
   it, a fresh state directory would pool ~156k historical messages for reply.
 
+## Group chats
+
+Different rules from 1:1: the agent reads every burst (a structured planning
+pass, stored per chat) and speaks only when its name appears in the text.
+
+- **`plug/mention.py` is the authority on being addressed**, not the model. The
+  planner's `addressed_to_us` is advisory. Never gate a send on it.
+- The send tool re-checks the tag. Prompt instructions are guidance; that check
+  is the enforcement.
+- The loop guard is deliberately split — off at intake for groups (so planning
+  continues), applied at send time. Don't "fix" it back into one place.
+- Four personality pillars in `supervisor_agent/personality.py` are prompt
+  fragments, not code branches. The planner picks one per burst by reading tone.
+
 ## Commands
 
 ```bash
 uv sync
-uv run pytest                                          # 124 tests
+uv run pytest                                          # 158 tests
 uv run plug doctor                                     # preflight, both servers
 
 uv run uvicorn watchdog.main:app --port 8001

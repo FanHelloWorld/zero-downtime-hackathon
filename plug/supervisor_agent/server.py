@@ -43,6 +43,7 @@ class SupervisorStats:
     blocked: int = 0
     retried: int = 0
     failed: int = 0
+    planned: int = 0
 
 
 class SupervisorServer:
@@ -158,7 +159,12 @@ class SupervisorServer:
                 events.emit(STAGE, "retry", chat=work.chat_guid, attempts=work.max_attempts, echo=self.echo)
             return
 
-        if outcome.sent:
+        if outcome.planned:
+            # Read the room and stayed quiet: the normal group-chat outcome.
+            # Terminal — the plan is already stored, so there is nothing to retry.
+            self.stats.planned += 1
+            self.spool.drop(work.ids, outcome.reason or "planned, not addressed")
+        elif outcome.sent:
             self.stats.sent += 1
             self.spool.ack(work.ids, "replied")
         elif outcome.skipped:

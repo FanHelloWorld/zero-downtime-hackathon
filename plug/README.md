@@ -70,7 +70,7 @@ watchdog/           server 1 — chat.db → pool
 supervisor_agent/   server 2 — pool → reply
                     agent, send, buffer, memory, server, cli, main (ASGI)
                     applescript/  three addressing strategies
-tests/              124 tests
+tests/              158 tests
 ```
 
 Note: the local `watchdog/` package shadows the PyPI package of the same name.
@@ -267,6 +267,67 @@ That split buys three things:
 - **Policy reloads cheaply.** Rate limits, deny patterns, and the kill switch all
   live supervisor-side, so changing them means restarting the supervisor alone.
 
+## Group chats: read always, speak rarely
+
+In a group chat the agent behaves differently from a 1:1. It reads every burst
+and stays silent unless someone says its name.
+
+**The planning pass.** On each burst it runs a separate model call that produces
+a structured plan — what's happening, the room's mood, open threads, what it
+*would* say, and which register it would use — and then does nothing with it.
+Same shape as plan mode: form an intent, write it down, don't act. The plan is
+stored per chat and fed to the next planning pass, so its read is continuous
+rather than reconstructed after the fact.
+
+Watch it think without it ever speaking:
+
+```bash
+curl -s localhost:8002/plan | python3 -m json.tool     # every chat it's following
+curl -s "localhost:8002/plan?chat=<hash>&limit=5"      # how one read evolved
+```
+
+**The four pillars.** The planner picks which register to lead with based on the
+tone it just read — one voice with four settings, not four bots.
+
+| Pillar | Register |
+|---|---|
+| `hype` | Extremely enthusiastic. Genuinely excited, amplifies other people. |
+| `flow` | Extremely laid-back. Goes with it, never escalates. |
+| `drama` | Theatrical. Everything is a Moment, stakes inflated for comedy. |
+| `deadpan` | Dry and understated. The joke lands because it isn't announced. |
+
+Observed selections: someone's good news → `hype`; a bereavement → `flow`;
+logistics → `flow`; petty bickering → `drama`.
+
+**Tagging is text-based, and it is authoritative.** The agent speaks when its
+name appears on a word boundary — `plug`, `@plug`, `Plug,` — but not inside
+`plugin`, `unplugged`, or `plug-in`. iMessage's own `has_unseen_mention` column
+is not usable for this: it's an *unseen* flag, cleared the moment you read the
+message, and only 9 rows in 156,000 ever had it set.
+
+The planner also reports its own `addressed_to_us`, but that is advisory only.
+The model does not get to decide it was invited — that would be asking a model
+to gate an action it wants to take. The detector decides, the send tool
+re-checks, and there is a test asserting a message that *claims* to tag the
+agent still results in silence.
+
+**Config** (`plug.yml`):
+
+```yaml
+group:
+  agent_name: plug
+  aliases: []
+  respond_when_tagged_only: true   # turning this off puts an LLM into a
+                                   # friend group's chat uninvited
+  plan_every_burst: true           # one model call per burst, even when silent
+  answer_direct_questions: false   # treat "what do you think?" as a tag when
+                                   # we spoke recently — a guess, so off
+```
+
+**The loop guard is split** for groups. At intake it does not apply, or the agent
+would be blind to the conversation for 30 seconds after every reply — exactly
+the messages it needs to stay oriented. It applies at send time instead.
+
 ## How the watchdog alerts the agent
 
 The watchdog `POST`s to the supervisor's `/notify` the moment it pools anything,
@@ -393,4 +454,4 @@ newest message rather than replying to your history.
 uv run pytest
 ```
 
-124 tests. Database-backed tests skip automatically without Full Disk Access.
+158 tests. Database-backed tests skip automatically without Full Disk Access.
