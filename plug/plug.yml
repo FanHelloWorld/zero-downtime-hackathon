@@ -8,7 +8,10 @@ watchdog:
   # wait out idle_sleep_seconds. Optional: the supervisor still polls, so this
   # only removes latency. Set to null when running the supervisor from the CLI
   # (no HTTP surface) or on another host.
-  notify_url: http://127.0.0.1:8002/notify
+  # Both apps under one uvicorn (main.py) for demos, so the supervisor is mounted
+  # at /supervisor. Two separate processes would use http://127.0.0.1:8002/notify.
+  notify_url: http://127.0.0.1:8000/supervisor/notify
+
   notify_timeout_seconds: 2
 
 supervisor:
@@ -22,6 +25,17 @@ supervisor:
 model: claude-haiku-4-5
 max_tokens: 1024
 history_turns: 12
+
+# Which model plays which role. Anything omitted falls back to `model` above.
+# A seam for swapping providers per role rather than wholesale — note that
+# worker_research must stay on Anthropic, because the MCP connector that gives it
+# web access is an Anthropic API feature.
+models:
+  reply: claude-haiku-4-5
+  planner: claude-haiku-4-5
+  worker_research: claude-haiku-4-5
+  worker_compose: claude-haiku-4-5
+
 
 persona: |
   You are Plug, replying to text messages on Manjesh's behalf.
@@ -48,8 +62,33 @@ group:
   answer_direct_questions: false
   plan_max_tokens: 700
 
+# Background agents. When answering well needs a real lookup, the agent says
+# something now and files a job; a worker researches it and the supervisor
+# delivers the answer as a follow-up. Each delegation therefore costs TWO sends
+# against the rate limits below.
+workers:
+  enabled: true
+  kinds: [food]            # only kinds listed here are ever offered to the agent
+  max_concurrent: 2
+  job_timeout_seconds: 150
+  per_chat_cooldown_seconds: 900
+  max_per_chat_per_day: 4
+  share_locations: coarse   # coarse strips street numbers before anything leaves this machine
+  apologize_on_failure: true
+  research_max_tokens: 3000
+  compose_max_tokens: 400
+  brightdata:
+    enabled: true
+    url: https://mcp.brightdata.com/mcp
+    token_env: BRIGHTDATA_API_TOKEN
+    groups: [business]
+    # Allowlist. The server exposes 60+ tools including browser automation;
+    # everything not named here is disabled on the request.
+    tools: [search_engine, scrape_as_markdown, web_data_google_maps_reviews]
+
 safety:
   per_chat_per_hour: 6
+
   global_per_hour: 30
   loop_window_seconds: 30
   max_reply_chars: 600

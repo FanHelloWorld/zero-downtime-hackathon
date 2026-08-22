@@ -16,7 +16,8 @@ from typing import Any
 
 from .config import EVENT_LOG, ensure_state_dir
 
-STAGES = ("watchdog", "buffer", "agent", "safety", "send")
+STAGES = ("watchdog", "buffer", "planner", "agent", "worker", "safety", "send")
+
 
 _lock = threading.Lock()
 

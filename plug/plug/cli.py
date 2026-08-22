@@ -147,6 +147,16 @@ def purge(
         removed = spool.purge(days * 24 * 3600)
     console.print(f"removed {removed} settled row(s)")
 
+    # Settled jobs age out on the same schedule. Imported here rather than at
+    # module level: `plug` is the shared CLI, and the job store is supervisor
+    # state — a top-level import would put it in the watchdog's path too.
+    from supervisor_agent.jobs import JobStore
+
+    with JobStore() as jobs:
+        removed_jobs = jobs.purge(days * 24 * 3600)
+    console.print(f"removed {removed_jobs} settled job(s)")
+
+
 
 if __name__ == "__main__":
     app()

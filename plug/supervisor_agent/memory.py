@@ -1,4 +1,5 @@
-"""Supervisor-owned state: conversation history, send log, rate counters.
+"""Supervisor-owned state: conversation history, dossiers, send log, rate counters.
+
 
 Lives in its own SQLite file (``~/.plug/supervisor.db``). The watchdog never
 reads or writes it, and the chat.db cursor is not here — that belongs to the
@@ -40,7 +41,16 @@ CREATE TABLE IF NOT EXISTS plans (
     payload   TEXT NOT NULL          -- the plan, as JSON
 );
 CREATE INDEX IF NOT EXISTS plans_chat_idx ON plans (chat_guid, id);
+
+-- Unlike plans, which are append-only so the read can be watched evolving, a
+-- dossier is one merged row per chat: the current state of what we know.
+CREATE TABLE IF NOT EXISTS dossiers (
+    chat_guid TEXT PRIMARY KEY,
+    ts        REAL NOT NULL,
+    payload   TEXT NOT NULL          -- the dossier, as JSON
+);
 """
+
 
 
 class Memory:
@@ -109,7 +119,25 @@ class Memory:
         ).fetchall()
         return [r["chat_guid"] for r in rows]
 
+    # ---- dossier ----------------------------------------------------------
+
+    def save_dossier(self, chat_guid: str, payload: str) -> None:
+        """Upsert this chat's dossier. One row per chat, latest wins."""
+        self._conn.execute(
+            "INSERT INTO dossiers (chat_guid, ts, payload) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_guid) DO UPDATE SET ts = excluded.ts, payload = excluded.payload",
+            (chat_guid, time.time(), payload),
+        )
+        self._conn.commit()
+
+    def load_dossier(self, chat_guid: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT payload FROM dossiers WHERE chat_guid = ?", (chat_guid,)
+        ).fetchone()
+        return row["payload"] if row else None
+
     # ---- send log and rate counters --------------------------------------
+
 
     def record_send(self, chat_guid: str, text: str, dry_run: bool) -> None:
         self._conn.execute(

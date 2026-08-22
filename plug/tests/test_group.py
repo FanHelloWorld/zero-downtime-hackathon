@@ -18,7 +18,7 @@ from supervisor_agent import personality
 from supervisor_agent.agent import Agent, AgentOutcome
 from supervisor_agent.planner import Plan
 
-from .conftest import make_message
+from .conftest import imported_roots, make_message
 
 
 def group_message(**kwargs):
@@ -146,15 +146,18 @@ def test_pillar_prompts_carry_voice_and_examples():
 class StubPlanner:
     def __init__(self, plan: Plan | None = None):
         self.calls = 0
+        self.dossiers: list[str] = []
         self._plan = plan if plan is not None else Plan(
             read="they're planning dinner", tone="loose, hungry",
             threads=["where to eat"], addressed_to_us=False,
             intent="suggest tacos", pillar="hype", pillar_reason="upbeat room",
         )
 
-    def plan(self, batch, previous=None):
+    def plan(self, batch, previous=None, dossier=""):
         self.calls += 1
+        self.dossiers.append(dossier)
         return self._plan
+
 
 
 def build_agent(config, memory, *, planner=None, dry_run=True, reply="sounds good"):
@@ -254,8 +257,9 @@ def test_the_model_cannot_talk_its_way_into_speaking(config, memory, monkeypatch
 
 def test_planner_failure_degrades_to_silence_not_an_error(config, memory):
     class BrokenPlanner:
-        def plan(self, batch, previous=None):
+        def plan(self, batch, previous=None, dossier=""):
             return None
+
 
     agent = build_agent(config, memory, planner=BrokenPlanner())
     outcome = agent.handle(group_batch("hey"))
@@ -326,3 +330,222 @@ def test_group_loop_guard_expires(config, memory):
     memory.record_send("chat", "we spoke", dry_run=False)
     time.sleep(0.01)
     assert ReplyPolicy(config, memory).can_send("chat", "again", is_group=True)
+
+
+# ---- the dossier the planner feeds ----------------------------------------
+
+
+def test_the_planner_is_shown_what_we_already_know(config, memory):
+    """Otherwise it cannot answer "what is still missing" — only "what was just said"."""
+    first = StubPlanner(Plan(facts_learned=[{"who": "+1aaa", "location": "Fremont"}]))
+    build_agent(config, memory, planner=first).handle(group_batch("im in fremont"))
+
+    second = StubPlanner()
+    build_agent(config, memory, planner=second).handle(group_batch("anyone hungry"))
+
+    assert "Fremont" in second.dossiers[-1]
+    assert first.dossiers[0] == "", "nothing known on the first burst"
+
+
+def test_facts_from_a_burst_are_merged_and_stored(config, memory):
+    from supervisor_agent.dossier import Dossier
+
+    planner = StubPlanner(Plan(
+        tone="hungry and loud",
+        facts_learned=[{"who": "+1aaa", "location": "Fremont", "availability": "after 7"}],
+    ))
+    agent = build_agent(config, memory, planner=planner)
+    batch = group_batch("im free after 7, im in fremont")
+    agent.handle(batch)
+
+    stored = Dossier.from_json(memory.load_dossier(batch.chat_guid))
+    assert stored.people["+1aaa"].location == "Fremont"
+    assert stored.people["+1aaa"].availability == "after 7"
+    assert stored.vibe == "hungry and loud"
+
+
+def test_a_failed_plan_leaves_the_dossier_alone(config, memory):
+    class BrokenPlanner:
+        def plan(self, batch, previous=None, dossier=""):
+            return None
+
+    keeper = StubPlanner(Plan(facts_learned=[{"who": "+1aaa", "location": "Fremont"}]))
+    agent = build_agent(config, memory, planner=keeper)
+    batch = group_batch("plug hi")
+    agent.handle(batch)
+    before = memory.load_dossier(batch.chat_guid)
+
+    build_agent(config, memory, planner=BrokenPlanner()).handle(batch)
+    assert memory.load_dossier(batch.chat_guid) == before
+
+
+def test_what_we_know_reaches_the_reply_prompt(config, memory):
+    """The "friend factors" are only useful if the voice writing the reply sees them."""
+    seen = {}
+
+    class Capturing(StubPlanner):
+        pass
+
+    planner = Capturing(Plan(
+        facts_learned=[{"who": "+1aaa", "name": "Ana", "note": "no shellfish"}],
+        pillar="deadpan",
+    ))
+    agent = build_agent(config, memory, planner=planner)
+    original = agent.client.beta.messages.tool_runner
+
+    def spy(*, tools, **kw):
+        seen["system"] = kw.get("system", "")
+        return original(tools=tools, **kw)
+
+    agent.client.beta.messages.tool_runner = spy
+    agent.handle(group_batch("plug what should we order"))
+
+    assert "Ana" in seen["system"]
+    assert "no shellfish" in seen["system"]
+
+
+# ---- the action proposal ---------------------------------------------------
+
+
+def test_the_plan_schema_offers_only_configured_workers():
+    from supervisor_agent.planner import build_schema
+
+    enum = build_schema(["food"])["properties"]["action"]["properties"]["kind"]["enum"]
+    assert enum == ["none", "food"]
+    assert "action" in build_schema(["food"])["required"]
+
+
+def test_an_old_plan_without_the_new_fields_still_loads():
+    """Plans stored before this feature must not break the chat they belong to."""
+    plan = Plan.from_json('{"read": "r", "tone": "t", "pillar": "hype"}')
+    assert plan.action_kind == "none"
+    assert plan.action_warranted is False
+    assert plan.facts_learned == []
+
+
+def test_a_malformed_action_does_not_raise():
+    assert Plan(action="not a dict").action_kind == "none"
+    assert Plan(action="not a dict").objective == ""
+    assert Plan(action={"kind": " FOOD "}).action_kind == "food"
+
+
+# ---- independence ----------------------------------------------------------
+
+
+def test_workers_stay_on_the_supervisor_side():
+    """Delegation must not leak chat.db access into the component that has none."""
+    from supervisor_agent.workers import mcp, registry, runner
+
+    for module in (runner, registry, mcp):
+        assert "watchdog" not in imported_roots(module)
+
+
+# ---- speaking at all -------------------------------------------------------
+
+
+def test_the_closing_rule_names_the_tools_that_exist():
+    """Without the names, the model answers in prose — and prose is never sent.
+
+    This regressed once: the rule was shortened to "use exactly one tool" and
+    two of three messages went unanswered, logged as `no tool call`.
+    """
+    from supervisor_agent.agent import _tool_rule
+
+    rule = _tool_rule(["send_reply", "skip"])
+    assert "`send_reply`" in rule and "`skip`" in rule
+    assert "discarded" in rule, "it must say what happens to plain text"
+
+    assert "`delegate`" in _tool_rule(["send_reply", "delegate", "skip"])
+
+
+def test_the_prompt_lists_delegate_only_when_it_is_offered(config, memory):
+    seen = {}
+    agent = build_agent(config, memory)
+    original = agent.client.beta.messages.tool_runner
+
+    def spy(*, tools, **kw):
+        seen["system"] = kw.get("system", "")
+        return original(tools=tools, **kw)
+
+    agent.client.beta.messages.tool_runner = spy
+    agent.handle(group_batch("plug what should we eat"))
+
+    assert "`send_reply`" in seen["system"] and "`skip`" in seen["system"]
+    assert "`delegate`" not in seen["system"], "no job store here, so no delegate tool"
+
+
+def test_a_prose_answer_is_retried_not_silently_dropped(config, spool, memory):
+    """The one failure a person in the chat notices and the operator does not."""
+    from supervisor_agent.agent import AgentOutcome
+    from supervisor_agent.server import SupervisorServer
+    from plug.safety import ReplyPolicy
+    from .conftest import make_message
+
+    class Mute:
+        dry_run = True
+
+        def handle(self, batch):
+            return AgentOutcome(reason="model produced no tool call")
+
+    config.supervisor.debounce_seconds = 0
+    spool.enqueue([make_message(rowid=1)])
+    server = SupervisorServer(
+        config, spool, memory, ReplyPolicy(config, memory), Mute(), owner="t"
+    )
+    server.tick()
+
+    assert spool.stats().dropped == 0, "a silent drop is indistinguishable from silence"
+    assert spool.stats().pending == 1, "it comes back for another try"
+
+
+# ---- one voice, not just in groups ----------------------------------------
+
+
+def test_a_one_to_one_reply_gets_the_personality_too(config, memory):
+    """It used to get the bare persona, and a model with no register writes support copy."""
+    from plug.models import Batch
+
+    seen = {}
+    agent = build_agent(config, memory)
+    original = agent.client.beta.messages.tool_runner
+
+    def spy(*, tools, **kw):
+        seen["system"] = kw.get("system", "")
+        return original(tools=tools, **kw)
+
+    agent.client.beta.messages.tool_runner = spy
+    agent.handle(Batch(chat_guid="c", messages=[make_message(body="hey")]))
+
+    assert personality.SHARED_GROUND in seen["system"]
+    assert personality.get(config.default_pillar).voice in seen["system"]
+
+
+def test_the_one_to_one_register_is_configurable(config, memory):
+    from plug.models import Batch
+
+    config.default_pillar = "deadpan"
+    seen = {}
+    agent = build_agent(config, memory)
+    original = agent.client.beta.messages.tool_runner
+
+    def spy(*, tools, **kw):
+        seen["system"] = kw.get("system", "")
+        return original(tools=tools, **kw)
+
+    agent.client.beta.messages.tool_runner = spy
+    agent.handle(Batch(chat_guid="c", messages=[make_message(body="hey")]))
+
+    assert personality.DEADPAN.voice in seen["system"]
+
+
+def test_nothing_tells_it_to_introduce_itself():
+    assert "never introduce yourself" in personality.SHARED_GROUND.lower()
+    assert "how can i help" in personality.SHARED_GROUND.lower(), "named as the anti-pattern"
+
+
+def test_it_still_may_not_deny_being_an_assistant():
+    """Sounding human is a voice change, not a licence to lie about what it is."""
+    from supervisor_agent.agent import SYSTEM_RULES
+
+    assert "Never claim to be a human" in SYSTEM_RULES
+    assert "tell them the truth" in SYSTEM_RULES

@@ -59,9 +59,11 @@ class StubWatchdog:
 
 class StubSupervisor:
     owner = "test-owner"
+    workers = None
 
     def __init__(self):
         self.stats = SupervisorStats(ticks=9, sent=2, blocked=1)
+
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +105,18 @@ def watchdog_client(monkeypatch, isolated_spool, isolated_watchdog_state):
 
 
 @pytest.fixture()
-def supervisor_client(monkeypatch, isolated_spool, tmp_path):
+def isolated_jobs(tmp_path, monkeypatch):
+    """Keep the real ~/.plug/jobs.db out of the tests."""
+    import supervisor_agent.main as sup_main
+    from supervisor_agent.jobs import JobStore
+
+    factory = lambda: JobStore(tmp_path / "jobs.db")  # noqa: E731
+    monkeypatch.setattr(sup_main, "JobStore", factory)
+    return factory
+
+
+@pytest.fixture()
+def supervisor_client(monkeypatch, isolated_spool, isolated_jobs, tmp_path):
     import supervisor_agent.main as sup_main
     from supervisor_agent.memory import Memory
 
@@ -111,6 +124,7 @@ def supervisor_client(monkeypatch, isolated_spool, tmp_path):
     monkeypatch.setattr(sup_main, "Memory", lambda: Memory(tmp_path / "supervisor.db"))
     with TestClient(sup_main.app) as client:
         yield client
+
 
 
 # ---- watchdog -------------------------------------------------------------
@@ -270,3 +284,64 @@ def test_status_does_not_touch_the_loop_threads_connections(tmp_path, monkeypatc
         body = client.get("/status")
         assert body.status_code == 200, body.text
         assert body.json()["cursor"] == 7
+
+
+# ---- background lookups ----------------------------------------------------
+
+
+def test_supervisor_jobs_lists_what_was_promised(supervisor_client, isolated_jobs):
+    from supervisor_agent.jobs import DELIVERED
+
+    with isolated_jobs() as store:
+        job = store.enqueue("chat-a", "food", "dinner for three", is_group=True)
+        store.claim("w")
+        store.ready(job.id, "long scraped findings", "el farolito")
+        store.settle(job.id, DELIVERED, "send_to_chat")
+
+    body = supervisor_client.get("/jobs")
+    assert body.status_code == 200, body.text
+    rows = body.json()["jobs"]
+    assert len(rows) == 1
+    assert rows[0]["job"] == job.job_key
+    assert rows[0]["state"] == "delivered"
+    assert rows[0]["reply"] == "el farolito"
+    assert "findings" not in rows[0], "scraped page content does not belong in an API listing"
+
+
+def test_supervisor_jobs_hides_the_chat_identifier(supervisor_client, isolated_jobs):
+    from plug.events import anon
+
+    with isolated_jobs() as store:
+        store.enqueue("chat-a", "food", "dinner")
+
+    rows = supervisor_client.get("/jobs").json()["jobs"]
+    assert rows[0]["chat"] == anon("chat-a")
+    assert "chat-a" not in str(rows)
+
+
+def test_supervisor_jobs_can_be_scoped_to_one_chat(supervisor_client, isolated_jobs):
+    from plug.events import anon
+
+    with isolated_jobs() as store:
+        store.enqueue("chat-a", "food", "first")
+        store.enqueue("chat-b", "food", "second")
+
+    rows = supervisor_client.get(f"/jobs?chat={anon('chat-a')}").json()["jobs"]
+    assert [r["objective"] for r in rows] == ["first"]
+    assert supervisor_client.get("/jobs?chat=nope").status_code == 404
+
+
+def test_supervisor_status_reports_worker_state(supervisor_client, isolated_jobs):
+    body = supervisor_client.get("/status").json()
+    assert body["jobs"]["queued"] == 0
+    assert body["workers"]["enabled"] is True
+    assert body["workers"]["kinds"] == ["food"]
+    assert "jobs" in body["paths"]
+    assert isinstance(body["workers"]["web_access"], bool)
+    assert "token" not in str(body).lower() or "BRIGHTDATA" not in str(body)
+
+
+def test_supervisor_metrics_include_jobs(supervisor_client, isolated_jobs):
+    text = supervisor_client.get("/metrics").text
+    assert "plug_jobs_queued" in text
+    assert "plug_supervisor_follow_ups_total" in text

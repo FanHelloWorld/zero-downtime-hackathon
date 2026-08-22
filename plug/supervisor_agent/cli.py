@@ -15,8 +15,11 @@ from plug.safety import ReplyPolicy
 from plug.spool import Spool
 
 from .agent import Agent
+from .jobs import JobStore
 from .memory import Memory
 from .server import SupervisorServer
+from .workers import WorkerPool, mcp
+
 
 app = typer.Typer(help="Supervisor agent: drains the pool and replies.", no_args_is_help=True)
 
@@ -37,10 +40,16 @@ def serve(
     """Start draining the pool and replying."""
     cfg = Config.load(config)
 
-    with Spool() as spool, Memory() as memory:
+    with Spool() as spool, Memory() as memory, JobStore() as jobs:
         policy = ReplyPolicy(cfg, memory)
-        agent = Agent(cfg, memory, policy, dry_run=dry_run)
-        server = SupervisorServer(cfg, spool, memory, policy, agent, echo=not quiet)
+        agent = Agent(cfg, memory, policy, dry_run=dry_run, jobs=jobs)
+        server = SupervisorServer(
+            cfg, spool, memory, policy, agent, echo=not quiet, jobs=jobs
+        )
+        server.workers = WorkerPool(
+            cfg, jobs, open_store=JobStore, client=agent.client, notify=server.notify,
+            echo=not quiet,
+        )
 
         mode = (
             "[yellow]DRY RUN — nothing will be sent[/yellow]" if dry_run
@@ -49,6 +58,13 @@ def serve(
         depth = spool.stats().depth
         console.print(f"supervisor {server.owner} · {mode}")
         console.print(f"pool ← {SPOOL_DB} (depth {depth}) · model {cfg.model}")
+        if cfg.workers.enabled:
+            web = "web access" if mcp.wiring(cfg.workers.brightdata) else "[yellow]no web access[/yellow]"
+            console.print(
+                f"workers: {', '.join(cfg.workers.kinds) or 'none'} "
+                f"(max {cfg.workers.max_concurrent} at once) · {web}"
+            )
+
         if safety_mod.is_paused():
             console.print("[yellow]kill switch is ON — sends are blocked until `plug-supervisor resume`[/yellow]")
         console.print("[dim]Ctrl-C to stop; the watchdog keeps pooling meanwhile[/dim]\n")
@@ -58,8 +74,10 @@ def serve(
     console.print(
         f"\nstopped after {stats.ticks} ticks — leased={stats.leased} filtered={stats.filtered} "
         f"batches={stats.batches} sent={stats.sent} skipped={stats.skipped} "
-        f"blocked={stats.blocked} retried={stats.retried}"
+        f"blocked={stats.blocked} retried={stats.retried} "
+        f"delegated={stats.delegated} follow_ups={stats.follow_ups}"
     )
+
 
 
 @app.command()
@@ -99,7 +117,34 @@ def doctor(config: Optional[str] = typer.Option(None, "--config", "-c")) -> None
     with Memory() as memory:
         console.print(f"{OK}   sends in last hour: {memory.sends_in_last_hour()}")
 
+    if not cfg.workers.enabled:
+        console.print(f"{OK}   workers disabled — the agent replies but never delegates")
+    else:
+        try:
+            with JobStore() as jobs:
+                js = jobs.stats()
+                console.print(
+                    f"{OK}   job store reachable — queued={js.queued} running={js.running} "
+                    f"ready={js.ready}"
+                )
+        except Exception as exc:
+            problems += 1
+            console.print(f"{FAIL} cannot open job store: {exc}")
+
+        wiring = mcp.wiring(cfg.workers.brightdata)
+        if wiring:
+            console.print(f"{OK}   web research via {mcp.redact(wiring.url)}")
+            console.print(f"       tools: {', '.join(wiring.tools)}")
+        else:
+            # Not fatal. A worker without web access answers from what the model
+            # already knows and says so — weaker, not broken.
+            console.print(
+                f"{WARN} no web research — set {cfg.workers.brightdata.token_env} "
+                f"for real lookups"
+            )
+
     if safety_mod.is_paused():
+
         console.print(f"{WARN} PAUSE file present — sending is disabled ({PAUSE_FILE})")
     else:
         console.print(f"{OK}   not paused")
@@ -126,7 +171,46 @@ def status() -> None:
         )
     with Memory() as memory:
         console.print(f"sends last hour: {memory.sends_in_last_hour()}")
+    with JobStore() as store:
+        j = store.stats()
+        console.print(
+            f"jobs:   queued={j.queued} running={j.running} ready={j.ready} "
+            f"delivered={j.delivered} failed={j.failed} expired={j.expired} blocked={j.blocked}"
+        )
     console.print(f"paused:          {safety_mod.is_paused()}")
+
+
+@app.command()
+def jobs(
+    chat: Optional[str] = typer.Option(None, "--chat", help="Anonymised chat id, as shown in the log."),
+    limit: int = typer.Option(20, "--limit", "-n"),
+) -> None:
+    """Background lookups the agent promised, and what became of them."""
+    with JobStore() as store:
+        target = None
+        if chat:
+            target = next(
+                (g for g in store.chats() if events.anon(g) == chat or g == chat), None
+            )
+            if target is None:
+                console.print(f"[yellow]no jobs recorded for {chat}[/yellow]")
+                raise typer.Exit(code=1)
+        rows = store.recent(target, limit=limit)
+
+    if not rows:
+        console.print("[dim]no jobs yet[/dim]")
+        return
+    for job in rows:
+        console.print(
+            f"{job.job_key}  [bold]{job.state:<9}[/bold] {job.kind:<6} "
+            f"chat={events.anon(job.chat_guid)} age={job.age:.0f}s"
+        )
+        console.print(f"    [dim]{job.objective[:100]}[/dim]")
+        if job.reply:
+            console.print(f"    → {job.reply[:120]}")
+        if job.note:
+            console.print(f"    [yellow]{job.note[:120]}[/yellow]")
+
 
 
 @app.command()
