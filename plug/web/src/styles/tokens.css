@@ -1,27 +1,68 @@
-/* Palette and type, carried over from the Sediment mockup unchanged.
-   Two moods: paper for the monitoring view, night for the canvas. */
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600;700&display=swap");
+
+/* ═══════════════════════════════════════════════════════════════
+   ONE palette for both tabs.
+
+   Every token name from the old file survives — Backstage.tsx sets
+   edge strokes to var(--lamp) / var(--haze) and React Flow's dot grid
+   to var(--haze), so the names are load-bearing. Only the values moved.
+   The night-* tokens are now light surfaces; nothing in the TSX had to
+   change for that, and `body.is-back` is deliberately a no-op.
+   ═══════════════════════════════════════════════════════════════ */
 :root {
-  --paper: #e8eae3;
-  --paper-2: #f2f3ee;
-  --paper-3: #dde0d6;
-  --ink: #161c18;
-  --ink-soft: #5c6660;
-  --rule: #c8ccc0;
-  --pine: #2f5d50;
-  --ember: #b4671f;
+  /* surfaces — cards are pure white so live data always stays readable;
+     all the colour lives behind them, where no data can break it */
+  --paper: #eef1ea;        /* fallback page tint under the gradient */
+  --paper-2: #ffffff;      /* cards, nodes */
+  --paper-3: #eceee6;      /* fills, inactive bars */
+  --paper-4: #f7f8f4;      /* panels */
 
-  --night: #0e1420;
-  --night-2: #161e2c;
-  --night-3: #1d2739;
-  --haze: #26324a;
-  --dust: #7e8ca4;
-  --chalk: #dce3ee;
-  --lamp: #de9a3e;
-  --moss: #63b695;
+  /* type */
+  --ink: #17211c;
+  --ink-soft: #5a6862;
+  --ink-faint: #8a968f;
+  --rule: #dfe4dd;
+  --rule-soft: #edf0ec;
 
-  --display: "Bricolage Grotesque", sans-serif;
-  --body: "IBM Plex Sans", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* accents — exactly three, each with one job */
+  --pine: #10806a;         /* quiet, healthy, "stayed silent" */
+  --lamp: #d97706;         /* activity, live, in flight */
+  --ember: #c2410c;        /* attention, failure, consequential action */
+  --iris: #5b52c9;         /* structure — backstage wiring */
+
+  /* aliases kept so the canvas keeps working: these WERE the dark set */
+  --night: var(--paper);
+  --night-2: #f4f5ef;      /* canvas field */
+  --night-3: var(--paper-2); /* node body */
+  --haze: var(--rule);     /* edges, dot grid, node borders */
+  --dust: var(--ink-soft);
+  --chalk: var(--ink);
+  --moss: var(--pine);
+  /* a lighter green used only where pine would read as plain black text */
+  --pine-lit: #3d8168;
+
+  /* readable on the ink block — the paper accents are too dark there */
+  --pine-up: #74c4a4;
+  --lamp-up: #e8a94f;
+  --ember-up: #e08268;
+  --chalk-up: #f7f8f2;
+  --dust-up: #97a294;
+
+  /* depth */
+  --lift-1: 0 1px 2px rgba(23, 33, 28, .05), 0 2px 8px rgba(23, 33, 28, .05);
+  --lift-2: 0 1px 3px rgba(23, 33, 28, .06), 0 10px 26px rgba(23, 33, 28, .08);
+  --lift-3: 0 2px 6px rgba(23, 33, 28, .07), 0 22px 52px rgba(23, 33, 28, .14);
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+
+  --display: "Bricolage Grotesque", "PingFang SC", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "PingFang SC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --bar-h: 60px;
+  --shell-max: 1240px;
 }
 
 * { box-sizing: border-box; }
@@ -29,86 +70,174 @@ html, body, #root { margin: 0; padding: 0; height: 100%; }
 
 body {
   font-family: var(--body);
-  background: var(--paper);
+  font-size: 14px;
+  background: transparent;
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
-  transition: background 0.5s ease, color 0.5s ease;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
 }
-body.is-back { background: var(--night); color: var(--chalk); }
+/* The two tabs are one design now. Kept as a hook, intentionally inert. */
+body.is-back { background: transparent; color: var(--ink); }
 
-/* ---- top bar ---- */
+/* ── mesh gradient ──────────────────────────────────────────────
+   Six soft blobs, drifting on a 26s loop. All the colour in the app
+   lives here, behind the content, so nothing a live payload can do
+   will break it. Each tab shifts the hue; the layout never changes. */
+body::before {
+  content: "";
+  position: fixed; inset: -25%; z-index: 0; pointer-events: none;
+  background-color: #eef1ea;
+  background-image:
+    radial-gradient(38% 44% at 12% 14%, rgba(16, 128, 106, .34), transparent 68%),
+    radial-gradient(34% 40% at 84% 8%,  rgba(217, 119, 6, .26),  transparent 66%),
+    radial-gradient(42% 46% at 72% 76%, rgba(91, 82, 201, .24),  transparent 68%),
+    radial-gradient(32% 38% at 26% 88%, rgba(16, 128, 106, .22), transparent 66%),
+    radial-gradient(30% 34% at 50% 40%, rgba(255, 255, 255, .55), transparent 70%);
+  filter: blur(46px) saturate(1.15);
+  animation: drift 26s ease-in-out infinite alternate;
+  transition: background-image .9s ease;
+}
+/* Backstage runs cooler — same design, different temperature. */
+body.is-back::before {
+  background-image:
+    radial-gradient(40% 46% at 10% 12%, rgba(91, 82, 201, .30), transparent 68%),
+    radial-gradient(34% 40% at 88% 14%, rgba(16, 128, 106, .26), transparent 66%),
+    radial-gradient(40% 44% at 68% 82%, rgba(217, 119, 6, .20),  transparent 68%),
+    radial-gradient(32% 36% at 22% 86%, rgba(91, 82, 201, .20),  transparent 66%),
+    radial-gradient(30% 34% at 48% 42%, rgba(255, 255, 255, .58), transparent 70%);
+}
+@keyframes drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(1.5%, -1.8%, 0) scale(1.05); }
+  100% { transform: translate3d(-1.6%, 1.4%, 0) scale(1.03); }
+}
+/* Fibre over the top, so the gradient reads as printed rather than as a
+   default CSS blur. */
+body::after {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  opacity: .22; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
+}
+.top, .page, .toast { position: relative; z-index: 1; }
+
+/* ─────────────────────────── top bar ─────────────────────────── */
 .top {
   position: sticky; top: 0; z-index: 40;
   display: flex; align-items: center; gap: 22px;
-  padding: 14px 26px;
-  border-bottom: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--paper) 88%, transparent);
-  backdrop-filter: blur(10px);
-  transition: background 0.5s ease, border-color 0.5s ease;
+  padding: 0 30px; height: var(--bar-h);
+  border-bottom: 1px solid rgba(255, 255, 255, .55);
+  background: rgba(255, 255, 255, .58);
+  backdrop-filter: blur(20px) saturate(1.6);
+  box-shadow: 0 1px 24px rgba(23, 33, 28, .05);
 }
-body.is-back .top {
-  background: color-mix(in srgb, var(--night) 88%, transparent);
-  border-bottom-color: var(--haze);
-}
+body.is-back .top { background: rgba(255, 255, 255, .58); border-bottom-color: rgba(255, 255, 255, .55); }
+
 .mark {
-  font-family: var(--display); font-weight: 800; font-size: 19px;
-  letter-spacing: -0.03em; display: flex; align-items: center; gap: 9px;
+  font-family: var(--display); font-weight: 800; font-size: 20px;
+  letter-spacing: -.04em; display: flex; align-items: center; gap: 10px;
 }
-.mark .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--pine); flex: none; }
-body.is-back .mark .dot { background: var(--lamp); }
+.mark .dot {
+  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  background: linear-gradient(140deg, var(--pine), var(--iris));
+  box-shadow: 0 0 0 3px rgba(16, 128, 106, .16), 0 2px 8px rgba(16, 128, 106, .3);
+}
+body.is-back .mark .dot { background: var(--pine); }
 .mark small {
-  font-family: var(--mono); font-weight: 400; font-size: 10px;
-  letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.45; margin-left: 3px;
+  font-family: var(--mono); font-weight: 500; font-size: 9.5px;
+  letter-spacing: .18em; text-transform: uppercase;
+  color: var(--ink-faint); margin-left: 4px; align-self: center;
 }
-.tabs { display: flex; gap: 4px; margin-left: auto; align-items: center; }
+
+.tabs { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+
+/* Segmented control rather than loose pills — reads as one switch. */
 .tab {
   font-family: var(--body); font-size: 13px; font-weight: 500;
-  padding: 7px 14px; border-radius: 999px; border: 1px solid transparent;
-  background: none; color: var(--ink-soft); cursor: pointer; transition: 0.18s;
+  padding: 7px 16px; border-radius: 999px; border: 1px solid transparent;
+  background: none; color: var(--ink-soft); cursor: pointer;
+  transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+  white-space: nowrap;
 }
-.tab:hover { color: var(--ink); }
-body.is-back .tab { color: var(--dust); }
-body.is-back .tab:hover { color: var(--chalk); }
-.tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-body.is-back .tab[aria-selected="true"] { background: var(--chalk); color: var(--night); border-color: var(--chalk); }
-.tab:focus-visible, .btn:focus-visible, .filt:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.tab:hover { color: var(--ink); background: color-mix(in srgb, var(--rule) 45%, transparent); }
+body.is-back .tab { color: var(--ink-soft); }
+body.is-back .tab:hover { color: var(--ink); }
+.tab[aria-selected="true"],
+body.is-back .tab[aria-selected="true"] {
+  background: linear-gradient(140deg, #1d2a24, var(--ink));
+  color: #fff; border-color: transparent;
+  box-shadow: 0 2px 10px rgba(23, 33, 28, .22);
+}
+.tab:focus-visible, .btn:focus-visible, .filt:focus-visible {
+  outline: 2px solid var(--lamp); outline-offset: 2px;
+}
 
-/* Live indicator — whether the event stream is actually connected. */
+/* connection lamp */
 .wire {
-  font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
-  text-transform: uppercase; display: inline-flex; align-items: center; gap: 6px;
-  color: var(--ink-soft);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+  text-transform: uppercase; display: inline-flex; align-items: center; gap: 7px;
+  color: var(--ink-faint);
+  border: 1px solid rgba(255, 255, 255, .8); border-radius: 999px;
+  padding: 4px 11px 4px 9px; margin-right: 6px;
+  background: rgba(255, 255, 255, .72); backdrop-filter: blur(8px);
 }
-body.is-back .wire { color: var(--dust); }
+body.is-back .wire { color: var(--ink-faint); }
 .wire::before {
-  content: ""; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--rule); flex: none;
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--rule); flex: none; transition: background .3s ease, box-shadow .3s ease;
 }
-.wire.live::before { background: var(--moss); box-shadow: 0 0 0 3px color-mix(in srgb, var(--moss) 22%, transparent); }
+.wire.live { color: var(--pine); border-color: color-mix(in srgb, var(--pine) 32%, var(--rule)); }
+.wire.live::before {
+  background: var(--pine);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pine) 20%, transparent);
+  animation: breathe 2.6s ease-in-out infinite;
+}
+.wire.down { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 32%, var(--rule)); }
 .wire.down::before { background: var(--ember); }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
 .page { display: none; }
 .page.on { display: block; }
+/* Centre the reading view; let the canvas run full-bleed. */
+.page:not(:has(.wf)) { max-width: var(--shell-max); margin: 0 auto; }
 
-/* ---- shared ---- */
+/* ───────────────────────── shared bits ───────────────────────── */
 .pill {
-  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
-  text-transform: uppercase; border: 1px solid var(--rule);
-  border-radius: 999px; padding: 4px 10px; color: var(--ink-soft);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+  text-transform: uppercase; border: 1px solid rgba(255, 255, 255, .85);
+  border-radius: 999px; padding: 5px 11px; color: var(--ink-soft);
+  background: rgba(255, 255, 255, .72); backdrop-filter: blur(8px);
+  white-space: nowrap; box-shadow: var(--lift-1);
 }
-body.is-back .pill { border-color: var(--haze); color: var(--dust); }
-.btn {
-  font-family: var(--body); font-size: 12.5px; font-weight: 500;
-  padding: 6px 13px; border-radius: 7px; border: 1px solid var(--rule);
-  background: var(--paper); color: var(--ink); cursor: pointer; transition: 0.15s;
-}
-.btn:hover { background: var(--paper-3); }
-.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.btn.warm { background: var(--ember); border-color: var(--ember); color: #fff; }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
-body.is-back .btn { background: var(--night-3); border-color: var(--haze); color: var(--chalk); }
-body.is-back .btn:hover { background: var(--haze); }
+body.is-back .pill { border-color: var(--rule); color: var(--ink-soft); }
 
+.btn {
+  font-family: var(--body); font-size: 12.5px; font-weight: 550;
+  padding: 7px 15px; border-radius: var(--r-sm); border: 1px solid var(--rule);
+  background: var(--paper-2); color: var(--ink); cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease, box-shadow .15s ease;
+  box-shadow: var(--lift-1); white-space: nowrap;
+}
+.btn:hover { background: #fff; border-color: var(--ink-faint); box-shadow: var(--lift-2); }
+.btn:active { transform: translateY(1px); box-shadow: var(--lift-1); }
+.btn.primary { background: linear-gradient(140deg, #1d2a24, var(--ink)); color: #fff; border-color: transparent; }
+.btn.primary:hover { background: #000; }
+.btn.warm {
+  background: linear-gradient(140deg, #ea580c, var(--ember)); border-color: transparent; color: #fff;
+  box-shadow: 0 1px 2px rgba(194, 65, 12, .24), 0 8px 20px rgba(194, 65, 12, .26);
+}
+.btn.warm:hover { background: linear-gradient(140deg, #f97316, #9a3412); }
+.btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+body.is-back .btn { background: var(--paper-2); border-color: var(--rule); color: var(--ink); }
+body.is-back .btn:hover { background: #fff; }
+body.is-back .btn.warm { background: var(--ember); color: #fff; border-color: var(--ember); }
+
+@media (max-width: 900px) {
+  .top { padding: 0 16px; gap: 12px; }
+  .mark small { display: none; }
+  .wire { padding: 4px 8px; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
