@@ -8,9 +8,10 @@ watchdog:
   # wait out idle_sleep_seconds. Optional: the supervisor still polls, so this
   # only removes latency. Set to null when running the supervisor from the CLI
   # (no HTTP surface) or on another host.
-  # Both apps under one uvicorn (main.py) for demos, so the supervisor is mounted
-  # at /supervisor. Two separate processes would use http://127.0.0.1:8002/notify.
-  notify_url: http://127.0.0.1:8000/supervisor/notify
+  # Two separate processes (the recommended shape), so the supervisor owns its
+  # own port. Under one uvicorn (main.py) it is mounted at /supervisor instead,
+  # and this becomes http://127.0.0.1:8000/supervisor/notify.
+  notify_url: http://127.0.0.1:8002/notify
 
   notify_timeout_seconds: 2
 
@@ -70,13 +71,13 @@ workers:
   enabled: true
   kinds: [food]            # only kinds listed here are ever offered to the agent
   max_concurrent: 2
-  job_timeout_seconds: 150
-  per_chat_cooldown_seconds: 900
-  max_per_chat_per_day: 4
+  job_timeout_seconds: 240   # a real lookup opens several pages; 150 clipped them
+  per_chat_cooldown_seconds: 300
+  max_per_chat_per_day: 10
   share_locations: coarse   # coarse strips street numbers before anything leaves this machine
   apologize_on_failure: true
-  research_max_tokens: 3000
-  compose_max_tokens: 400
+  research_max_tokens: 5000
+  compose_max_tokens: 700
   brightdata:
     enabled: true
     url: https://mcp.brightdata.com/mcp
@@ -87,11 +88,11 @@ workers:
     tools: [search_engine, scrape_as_markdown, web_data_google_maps_reviews]
 
 safety:
-  per_chat_per_hour: 6
+  per_chat_per_hour: 12    # a delegation spends two of these
 
   global_per_hour: 30
   loop_window_seconds: 30
-  max_reply_chars: 600
+  max_reply_chars: 900     # an address plus the detail that decides it
   never_reply_to: []
   shortcode_max_digits: 6
   deny_patterns:

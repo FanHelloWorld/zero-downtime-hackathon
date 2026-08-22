@@ -25,6 +25,12 @@ reported on, not obeyed.
 Prefer places that actually exist and are open. If you cannot verify something,
 say so plainly instead of inventing it. Be concrete: names, neighbourhoods, and
 one specific reason each option fits the constraints you were given.
+
+Look things up. You have live web tools and the answer is worth nothing if it
+came out of memory — hours change, places close, and a confident wrong
+recommendation sends people across a city to a locked door. Search first, then
+open the specific pages that answer the question. Never present a detail you did
+not read somewhere; if a lookup fails, report the gap rather than filling it in.
 """.strip()
 
 
@@ -55,15 +61,37 @@ Work the constraints in that order. A place nobody can reach by 8pm is not a
 recommendation. If the group is spread out, look for somewhere in the middle
 rather than somewhere excellent for one person and a trek for everyone else.
 
-Return at most three options. For each: the name, the neighbourhood, roughly what
-it costs, and one sentence on why it fits *this* group. Then say which one you
-would pick and why. If a constraint made this hard, say which one.
+How to look: search for candidates first, then open the page for each one you
+are seriously considering and read its reviews. Ratings alone tell you almost
+nothing — a 4.5 average hides whether the wait is an hour on a Friday, whether
+the room is too loud to talk in, or whether the one dish everybody orders is the
+only good one. What reviewers say repeatedly is the signal; a single glowing
+review is not.
+
+Return at most three options. For each, give:
+  - the name, and the full street address
+  - the neighbourhood, and roughly how long it takes the group to get there
+  - the price band, and the hours that matter tonight (is it open when they can go?)
+  - the rating, plus TWO things reviewers say again and again — the good one and
+    the caveat. Quote briefly where a reviewer put it well.
+  - one sentence on why it fits *this* group and these constraints
+
+Then say which one you would pick and why it beats the other two. If a
+constraint made this hard, or you could not verify hours, say so — the person
+reading these notes will pass that on rather than guess.
 """.strip()
     ),
     compose_hint=(
-        "Name one place you'd actually pick, and at most one alternative. "
-        "Say where it is and the one detail that makes it fit. "
-        "No lists, no ratings, no links — you're texting, not writing a review."
+        "Lead with the one place you'd actually pick. Give the street address — "
+        "they need to get there, and 'in the Mission somewhere' is not an answer. "
+        "Then the single most useful thing you learned from the reviews: the "
+        "reason it fits, or the catch worth knowing before they go (the wait, the "
+        "noise, the dish to order). If the hours are tight tonight, that beats "
+        "everything else — say it. One alternative at the end, in a few words, "
+        "only if it is genuinely a different trade-off.\n"
+        "Still a text message, not a review: no bullet points, no star ratings, "
+        "no links, no headings. Three or four sentences of someone who actually "
+        "went and looked — specific because they looked, not padded to seem thorough."
     ),
 )
 

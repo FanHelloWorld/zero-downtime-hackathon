@@ -27,7 +27,10 @@ are counterintuitive enough that guessing will get it wrong.
 | `supervisor_agent/workers/` | background lookups: registry (prompts), mcp (Bright Data wiring), runner (threads) |
 | `supervisor_agent/jobs.py` | `~/.plug/jobs.db` — the leased queue for delegated work |
 | `supervisor_agent/dossier.py` | what we know about a chat, merged in Python from plan facts |
-| `main.py` | both apps in one uvicorn process (convenience only) |
+| `console/` | server 3: state → HTTP + SSE + the UI. Reads only; no chat.db, no key, no sends. |
+| `web/` | React + TypeScript UI. `src/state/pipeline.ts` is the glow state machine. |
+| `main.py` | all three apps in one uvicorn process, and the built UI at `/` |
+
 
 
 The two servers must stay independent — neither imports the other, and there are
@@ -63,6 +66,20 @@ Each of these cost real debugging time once already.
 - **`can_send(follow_up=True)` skips the loop guard and nothing else.** It exists
   because a worker finishing within the window would otherwise be discarded after
   the chat was told to expect an answer. Do not widen it.
+- **Events are written twice** — `events.jsonl` and `events.db`. The second write
+  is wrapped and swallows everything: `emit()` runs inside error handlers, and a
+  broken log must not break the pipeline.
+- **`eventlog` resolves `EVENTS_DB` at call time**, not as a default argument.
+  A default bound at import pins the real store and defeats test isolation.
+- **Tests redirect `EVENT_LOG`, `EVENTS_DB` and `PAUSE_FILE`** in a
+  *session-scoped* conftest fixture. Session, not function: worker and notifier
+  threads are daemons that outlive the test that spawned them, and a per-test
+  patch is already reverted when they emit. A suite run once left the real
+  `~/.plug/PAUSE` engaged, silently stopping sends.
+- **`/api/stream` is an infinite generator** unless `limit` is set. A client that
+  stops reading without disconnecting hangs it; that is what `limit` and
+  `quiet_timeout` are for.
+
 
 
 ## Group chats
@@ -98,17 +115,41 @@ pass, stored per chat) and speaks only when its name appears in the text.
   consent to it reaching a scraping service.
 
 
+## The console
+
+- **It reads; it does not drive.** Its controls are doors onto switches that
+  already existed. The one exception is `POST /api/dispatch`, which starts a
+  lookup for an untagged chat — allowed because a human pressed a button, and
+  still subject to `can_send`, the kill switch and dry run.
+- **Anonymise by default.** `_label` hashes chat guids and `_text` redacts phone
+  numbers and emails out of the model's own prose. The planner writes handles
+  into its `read` and `missing` fields routinely, and this screen gets shared.
+- **The glow is a reducer, not timers.** `web/src/state/pipeline.ts` maps an
+  event to the nodes and edges it lights; a 250ms tick decays anything older than
+  `DECAY_MS`. It returns the same object when nothing changed, so a quiet tick
+  costs no render. `agent/delegated` creates a node — that mirrors a real thread.
+- **A graph refetch must not erase a live worker.** The API may not see the job
+  row yet, and dropping the node makes it flicker in and out.
+
 ## Commands
+
 
 ```bash
 uv sync
-uv run pytest                                          # 260 tests
+uv run pytest                                          # 316 tests
+cd web && npm install && npm run build                 # the UI, into web/dist
+cd web && npx vitest run                               # 19 reducer tests
+uv run plug backfill                                   # events.jsonl → events.db
+
 
 uv run plug doctor                                     # preflight, both servers
 
 uv run uvicorn watchdog.main:app --port 8001
 PLUG_DRY_RUN=1 uv run uvicorn supervisor_agent.main:app --port 8002
+
+PLUG_DRY_RUN=1 uv run uvicorn main:app --port 8000   # all three + UI at /
 ```
+
 
 Run from the project directory. Stop every server you start — a lingering one
 holds the single-instance lock and blocks the user's own runs.

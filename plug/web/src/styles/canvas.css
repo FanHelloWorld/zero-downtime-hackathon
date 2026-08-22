@@ -1,0 +1,97 @@
+/* The Backstage canvas. Node styling is the mockup's, kept as-is; what changed
+   is that `.running` is now driven by the event stream instead of a fixed class. */
+
+.wf { display: grid; grid-template-columns: 242px 1fr; min-height: calc(100vh - 56px); }
+.wf-side { border-right: 1px solid var(--haze); padding: 22px 16px; overflow-y: auto; }
+.wf-side h3 {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--dust); margin: 0 0 13px; font-weight: 500;
+}
+.ag { padding: 10px 11px; border-radius: 8px; margin-bottom: 5px; border: 1px solid transparent; }
+.ag-n { font-family: var(--mono); font-size: 12.5px; display: flex; align-items: center; gap: 7px; }
+.ag-n::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dust); flex: none; }
+.ag.running .ag-n::before { background: var(--lamp); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lamp) 22%, transparent); }
+.ag.always .ag-n::before { background: var(--moss); }
+.ag.retired { opacity: 0.42; }
+.ag-m { font-size: 11px; color: var(--dust); margin-top: 4px; line-height: 1.5; word-break: break-word; }
+
+.wf-main { padding: 22px 24px 24px; display: flex; flex-direction: column; min-width: 0; }
+.wf-head { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.wf-head h2 { font-family: var(--display); font-weight: 800; font-size: 24px; letter-spacing: -0.03em; margin: 0; }
+.wf-head p { margin: 0; font-size: 12.5px; color: var(--dust); max-width: 46ch; line-height: 1.6; }
+
+.canvas-wrap {
+  border: 1px solid var(--haze); border-radius: 14px; background: var(--night-2);
+  height: 60vh; min-height: 420px; overflow: hidden;
+}
+
+/* ---- nodes ---- */
+.node {
+  background: var(--night-3); border: 1px solid var(--haze); border-radius: 11px;
+  padding: 12px 13px; width: 210px;
+  transition: border-color 0.45s ease, box-shadow 0.45s ease, background 0.45s ease, opacity 0.45s ease;
+}
+.node.active {
+  border-color: var(--lamp);
+  background: color-mix(in srgb, var(--lamp) 9%, var(--night-3));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--lamp) 13%, transparent);
+}
+.node.always { border-color: color-mix(in srgb, var(--moss) 55%, var(--haze)); }
+.node.running { border-color: color-mix(in srgb, var(--lamp) 45%, var(--haze)); }
+.node.retired { opacity: 0.4; }
+.node.done { opacity: 0.72; }
+
+.n-kind {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--dust);
+}
+.n-name {
+  font-family: var(--body); font-weight: 600; font-size: 14px; margin-top: 4px;
+  display: flex; align-items: center; gap: 7px; color: var(--chalk);
+}
+.n-name .led { width: 6px; height: 6px; border-radius: 50%; background: var(--dust); flex: none; }
+.node.always .led { background: var(--moss); }
+.node.active .led { background: var(--lamp); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.n-desc { font-size: 11.5px; color: var(--dust); margin-top: 5px; line-height: 1.5; }
+.tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
+.tool {
+  font-family: var(--mono); font-size: 9.5px; border: 1px solid var(--haze);
+  border-radius: 5px; padding: 2px 6px; color: var(--dust);
+}
+.node.active .tool { border-color: color-mix(in srgb, var(--lamp) 40%, var(--haze)); color: var(--lamp); }
+.n-last {
+  font-family: var(--mono); font-size: 9px; color: var(--lamp);
+  margin-top: 8px; letter-spacing: 0.06em; min-height: 11px;
+}
+
+/* React Flow's own chrome, tuned to the night palette. */
+.react-flow__attribution { display: none; }
+.react-flow__controls-button {
+  background: var(--night-3); border-bottom: 1px solid var(--haze); fill: var(--dust);
+}
+.react-flow__controls-button:hover { background: var(--haze); }
+.react-flow__handle { opacity: 0; }
+
+/* ---- log ---- */
+.log { margin-top: 14px; border: 1px solid var(--haze); border-radius: 12px; background: var(--night-2); padding: 14px 16px; }
+.log h3 {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--dust); margin: 0 0 10px; font-weight: 500;
+  display: flex; justify-content: space-between;
+}
+.log ol { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.9; max-height: 200px; overflow-y: auto; }
+.log li { display: flex; gap: 12px; color: var(--dust); }
+.log li.fresh { animation: arrive 0.5s ease; }
+@keyframes arrive { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+.log time { color: var(--haze); flex: none; width: 62px; }
+.log b { color: var(--chalk); font-weight: 400; }
+.log .lamp { color: var(--lamp); }
+.log .moss { color: var(--moss); }
+.log .ember { color: var(--ember); }
+
+@media (max-width: 900px) {
+  .wf { grid-template-columns: 1fr; }
+  .wf-side { border-right: 0; border-bottom: 1px solid var(--haze); }
+}

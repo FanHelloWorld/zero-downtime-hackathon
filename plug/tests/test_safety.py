@@ -214,3 +214,13 @@ def test_a_paused_system_sends_no_follow_ups(config, memory):
         assert not ReplyPolicy(config, memory).can_send("chat", "hi", follow_up=True)
     finally:
         resume()
+
+
+def test_the_kill_switch_is_isolated_from_the_real_one():
+    """A suite run once left ~/.plug/PAUSE engaged, silently stopping real sends."""
+    from pathlib import Path
+
+    from plug import safety as safety_mod
+
+    assert safety_mod.PAUSE_FILE != Path.home() / ".plug" / "PAUSE"
+    assert "pytest" in str(safety_mod.PAUSE_FILE) or "tmp" in str(safety_mod.PAUSE_FILE).lower()

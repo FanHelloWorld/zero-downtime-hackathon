@@ -307,3 +307,38 @@ def test_one_to_one_can_delegate_too(config, memory, jobs):
     assert "delegate" in seen["tools"]
     assert outcome.delegated
     assert jobs.recent()[0].is_group is False
+
+
+def test_delegate_is_withheld_when_a_lookup_is_already_running(config, memory, jobs):
+    """The toggling bug: an offered tool that can only refuse.
+
+    The model calls `delegate`, reads "you are already looking something up",
+    and stops — producing no tool call at all. The supervisor retries the batch
+    into the same dead end, so a chat that just said "plug" watches it say
+    nothing, repeatedly. The tool has to be absent, not merely refusing.
+    """
+    agent, seen = build_agent(config, memory, jobs)
+    batch = group_batch("plug where should we eat")
+    agent.handle(batch)
+    assert "delegate" in seen["tools"], "the first turn may delegate"
+    assert len(jobs.recent()) == 1
+
+    outcome = agent.handle(batch)
+    assert "delegate" not in seen["tools"], "a job is already running for this chat"
+    assert seen["tools"] == ["send_reply", "skip"]
+    assert not outcome.delegated
+    assert len(jobs.recent()) == 1, "no second job"
+
+
+def test_delegate_is_withheld_during_the_cooldown(config, memory, jobs):
+    from supervisor_agent.jobs import DELIVERED
+
+    agent, seen = build_agent(config, memory, jobs)
+    batch = group_batch("plug where should we eat")
+    agent.handle(batch)
+    jobs.settle(jobs.recent()[0].id, DELIVERED, "done")
+
+    config.workers.per_chat_cooldown_seconds = 3600
+    agent.handle(batch)
+    assert "delegate" not in seen["tools"]
+    assert len(jobs.recent()) == 1

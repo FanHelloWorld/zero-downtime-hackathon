@@ -334,3 +334,65 @@ def test_a_stopping_pool_claims_nothing_more(config, jobs, tmp_path, token):
     pool, _, _, _ = build_pool(config, jobs, tmp_path)
     pool.request_stop()
     assert pool.pump() == 0
+
+
+# ---- making sure the lookup actually happens -------------------------------
+
+
+def test_research_retries_when_the_model_never_called_a_tool(config, jobs, tmp_path, token):
+    """The quiet failure: a live connector the model declined to use.
+
+    Fluent notes, real-sounding places, nothing checked — and `mcp_calls: 0`
+    looks identical in the log to a job that needed no web. Ask again, once,
+    with the omission named.
+    """
+    file_one(jobs)
+    create = FakeCreate(blocks=[Block("text", "probably el farolito idk")])
+    pool, create, _, _ = build_pool(config, jobs, tmp_path, create=create)
+
+    pool.pump()
+    drain(pool)
+
+    assert len(create.calls) == 2, "one research call, then one insisting retry"
+    second = create.calls[1]["messages"][0]["content"]
+    assert "without running a single search" in second
+    assert create.calls[1]["mcp_servers"], "the retry still carries the connector"
+
+    ready = [j for j in jobs.recent() if j.reply]
+    assert ready, "the job still finishes rather than hanging the chat"
+
+
+def test_research_does_not_retry_when_tools_were_used(config, jobs, tmp_path, token):
+    file_one(jobs)
+    pool, create, _, _ = build_pool(config, jobs, tmp_path)  # default blocks include mcp_tool_use
+
+    pool.pump()
+    drain(pool)
+
+    assert len(create.calls) == 1, "a lookup that happened is not repeated"
+
+
+def test_no_retry_without_a_connector(config, jobs, tmp_path, no_token):
+    """No wiring means no web access — retrying would ask for the impossible."""
+    file_one(jobs)
+    create = FakeCreate(blocks=[Block("text", "from memory, sorry")])
+    pool, create, _, _ = build_pool(config, jobs, tmp_path, create=create)
+
+    pool.pump()
+    drain(pool)
+
+    assert len(create.calls) == 1
+    assert "no web access" in create.calls[0]["messages"][0]["content"]
+
+
+def test_the_research_prompt_asks_for_addresses_and_reviews(config, jobs, tmp_path, token):
+    file_one(jobs)
+    pool, create, _, _ = build_pool(config, jobs, tmp_path)
+    pool.pump()
+    drain(pool)
+
+    system = create.calls[0]["system"]
+    assert "full street address" in system
+    assert "reviews" in system
+    prompt = create.calls[0]["messages"][0]["content"]
+    assert "do not answer from memory" in prompt

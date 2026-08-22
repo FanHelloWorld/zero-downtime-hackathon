@@ -11,5 +11,11 @@ __pycache__/
 .venv/
 .pytest_cache/
 
+# Frontend. dist is a build artifact — `npm run build` regenerates it, and the
+# console serves whatever is there.
+web/node_modules/
+web/dist/
+
 # macOS
 .DS_Store
+

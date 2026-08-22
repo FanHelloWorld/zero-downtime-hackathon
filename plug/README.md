@@ -75,9 +75,9 @@ that drop verification codes and short-code senders.
 ## What's included
 
 ```
-main.py             both apps in one uvicorn process (convenience only)
+main.py             all three apps in one uvicorn process, and the UI
 plug/               shared core
-                    config, models, events, safety, spool,
+                    config, models, events, eventlog, safety, spool,
                     service (thread + instance lock), notify, mention
 watchdog/           server 1 — chat.db → pool
                     db, decode, state, server, cli, main (ASGI)
@@ -87,7 +87,11 @@ supervisor_agent/   server 2 — pool → reply
                     jobs, llm                       delegated work, model seam
                     workers/  registry, mcp, runner background lookups
                     applescript/  three addressing strategies
-tests/              260 tests
+console/            server 3 — state → HTTP + SSE. Reads only.
+                    server (views), main (ASGI + stream + controls)
+web/                the UI — React + TypeScript, Vite, React Flow
+                    src/state/pipeline.ts is the glow state machine
+tests/              316 tests  (+19 in web/)
 ```
 
 
@@ -109,6 +113,12 @@ for uvicorn. Endpoints:
 | `GET /dead` `POST /dead/requeue` | — | dead-letter queue |
 | `GET /plan` | — | what it has been thinking, per chat |
 | `GET /jobs` | — | background lookups and what became of them |
+
+The console adds a third surface at `/api` (and the UI at `/`): `overview`,
+`graph`, `artifacts`, `agents`, `log`, `dossier/{chat}`, a `stream` of
+server-sent events, and the controls `control/pause`, `control/resume`,
+`jobs/{key}/cancel`, `dispatch`.
+
 
 
 **The test suite**, by area:
@@ -352,7 +362,73 @@ end up `blocked` after the worker succeeded.
 **Cost:** two sends per delegation, against 6 per chat per hour. A chat that
 delegates three times in an hour is rate-limited.
 
+## The console
+
+`plug tail -f` is the right tool when something is broken and the wrong one for
+seeing what this system *is* — the interesting behaviour is invisible by design.
+The agent reads every burst and stays quiet; plans pile up unseen; workers
+research in the background. All of that is real and none of it is visible in a
+chat window.
+
+```bash
+cd web && npm install && npm run build     # once
+PLUG_DRY_RUN=1 uv run uvicorn main:app --port 8000
+open http://localhost:8000
+```
+
+One process serves the watchdog, the supervisor, the API and the UI. During
+development run `npm run dev` instead and Vite proxies `/api` to port 8000.
+
+**Shared space** is the monitoring view: how much it heard against how rarely it
+spoke, and a card per lookup — finished, closed, or merely *considered* (a plan
+that named a worker and never became one).
+
+**Backstage** is a pan/zoom canvas of the pipeline that lights up as work moves
+through it. The watchdog brightens when it pools a message, the edge travels to
+the supervisor, the agent lights when it starts — and when the agent delegates,
+**a new worker node appears**, because a thread really was spawned. Nodes fade
+back on a timer rather than snapping off, so you can see the shape of a run after
+it finishes.
+
+### How it reads state
+
+Events are written twice. `events.jsonl` stays exactly as it was — append-only,
+greppable, the thing to read when something is on fire. Alongside it,
+`~/.plug/events.db` holds the same records indexed, and its autoincrement `id`
+doubles as a stream cursor: the browser asks for `id > n` over SSE, and a laptop
+that sleeps mid-run resumes from `Last-Event-ID` instead of losing the run.
+
+Nothing cloud-shaped is in that path on purpose. `emit()` is called from loop
+threads, worker threads and error handlers in both servers; a network write there
+would sit between the watchdog and its next poll.
+
+```bash
+uv run plug backfill      # replay events.jsonl into the index (idempotent)
+```
+
+### What it may and may not do
+
+The console is the third server and the only one with no loop. It holds **no
+chat.db, no API key, no AppleScript, no model** — the same least-privilege split
+that separates the other two, extended to a third member. Its controls are doors
+onto switches that already existed: `pause`/`resume` is the same kill switch,
+`cancel` settles a job.
+
+The exception is **`POST /api/dispatch`**, which starts a lookup for a chat
+nobody tagged. That is the one place the UI loosens the rule `plug/mention.py`
+enforces, and it is deliberate: a person pressing a button is a stronger
+statement of intent than their name appearing in a message. Everything after it
+is unchanged — the follow-up still passes `can_send`, the kill switch and dry
+run. Set `console.allow_dispatch: false` to remove it.
+
+**Chat identifiers are anonymised by default**, keyed the same way the event log
+keys them, and phone numbers and emails written into the model's own prose are
+redacted too — a planner's read of the room routinely contains handles, and this
+is the surface most likely to be screenshared. `console.reveal_handles: true`
+turns both off.
+
 ## Troubleshooting
+
 
 
 | Symptom | Cause |
@@ -368,6 +444,10 @@ delegates three times in an hour is rate-limited.
 | Recommendations are vague or dated | No `BRIGHTDATA_API_TOKEN`, so the worker had no web access. `doctor` says so. |
 | A job sits in `ready` | The follow-up is being refused — paused, or rate-limited. The `note` on the job says which. |
 | A job sits in `running` forever | It is retired after `job_timeout_seconds` on the next tick. |
+| The console shows no history | `events.db` starts empty. `uv run plug backfill` replays the JSONL into it. |
+| The UI 404s at `/` | No `web/dist`. `cd web && npm run build`, or use the Vite dev server. |
+| The stream indicator says `down` | The API is unreachable, or a proxy is buffering `text/event-stream`. |
+
 
 
 ## Why it's split

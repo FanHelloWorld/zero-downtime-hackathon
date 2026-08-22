@@ -10,8 +10,41 @@ from plug.models import STYLE_DIRECT, STYLE_GROUP, Message
 from plug.spool import Spool, SpoolItem
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_event_log(tmp_path_factory):
+    """Keep test events out of the real ~/.plug logs, for the whole session.
+
+    Both logs feed a dashboard now, so a suite run that appended to them would
+    put hundreds of synthetic sends and silences into whatever the console
+    reports.
+
+    Session-scoped, not per-test, because the leak is threads: worker threads
+    and the notifier's fire-and-forget thread are daemons that outlive the test
+    that started them, and a per-test patch is already reverted by the time they
+    emit. Redirecting once for the run is the only scope that covers them.
+
+    The kill switch is redirected for a sharper reason. Tests that exercise it
+    call the real ``pause()``, which writes ``~/.plug/PAUSE`` — and a run that
+    ends between pause and resume leaves the user's own system silently refusing
+    to send. That happened once. It is a file, not a fixture, so isolate it.
+    """
+    from plug import eventlog as eventlog_mod
+    from plug import events as events_mod
+    from plug import safety as safety_mod
+
+    scratch = tmp_path_factory.mktemp("plug-events")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(events_mod, "EVENT_LOG", scratch / "events.jsonl")
+        mp.setattr(eventlog_mod, "EVENTS_DB", scratch / "events.db")
+        mp.setattr(safety_mod, "PAUSE_FILE", scratch / "PAUSE")
+        yield
+
+
+
+
 @pytest.fixture()
 def memory(tmp_path):
+
     mem = Memory(tmp_path / "supervisor.db")
     yield mem
     mem.close()

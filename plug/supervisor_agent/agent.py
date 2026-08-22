@@ -78,7 +78,10 @@ def _tool_rule(names: list[str]) -> str:
         f"Answer by calling exactly one tool: {listed}. Then stop.\n"
         "Plain text is not a reply — anything you write outside a tool call is "
         "discarded and nobody ever sees it. Even when a message needs no answer, "
-        "say so with the skip tool rather than writing it out."
+        "say so with the skip tool rather than writing it out.\n"
+        "If a tool comes back refusing, that turn is not over: call another one. "
+        "Stopping after a refusal is the same as saying nothing, and someone is "
+        "waiting on you."
     )
 
 
@@ -295,6 +298,23 @@ class Agent:
         # Resolved once, before the tools are built: whether delegation is on the
         # table at all decides whether the model is even shown the tool.
         kind = self._worker_kind(plan)
+
+        # And whether it *may run* decides the same thing. A tool whose only
+        # possible answer is "no" is worse than an absent one: the model calls
+        # it, reads the refusal, and frequently stops there — a turn that says
+        # nothing, which the supervisor then retries into the same dead end. The
+        # observed shape is agent start → worker refused → no_action → retry,
+        # over and over, which from the chat's side looks like Plug ignoring
+        # someone who just said its name. Withdraw the tool and the model
+        # answers with what it has, which is the correct move anyway.
+        if kind is not None:
+            refusal = self._delegation_refusal(chat_guid)
+            if refusal:
+                events.emit(
+                    "worker", "unavailable", chat=chat_guid, reason=refusal,
+                    note="delegate withheld; the agent answers directly this turn",
+                )
+                kind = None
 
         @beta_tool
         def send_reply(text: str) -> str:
